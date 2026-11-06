@@ -7,6 +7,7 @@ use clap::{CommandFactory, Parser};
 
 use vpn_switcher::cli::{Cli, Command, ConfigAction};
 use vpn_switcher::config::{self, Config, ConfigError};
+use vpn_switcher::detect::{self, Sources};
 use vpn_switcher::interrupt::{self, Disposition};
 use vpn_switcher::runner::{self, Runner, ShellRunner};
 use vpn_switcher::state::{self, VpnState};
@@ -58,7 +59,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         verbose: cli.verbose,
     };
     match cli.command.unwrap_or(Command::Switch) {
-        Command::Init { force } => init(&path, force),
+        Command::Init { force, example } => init(&path, force, example),
         Command::Completions { .. } | Command::Man => unreachable!("handled above"),
         Command::Config { action } => match action {
             ConfigAction::Path => {
@@ -226,20 +227,88 @@ fn find(config: &Config, name: &str) -> anyhow::Result<usize> {
         .ok_or_else(|| anyhow!("unknown VPN `{name}` (known: {})", config.names()))
 }
 
-fn init(path: &Path, force: bool) -> anyhow::Result<()> {
+fn init(path: &Path, force: bool, example: bool) -> anyhow::Result<()> {
+    if example || ui::ensure_tty().is_err() {
+        return write_example(path, force);
+    }
+    let detected = detect::detect(&Sources::system(&ShellRunner));
+    if detected.is_empty() {
+        println!("No VPN client detected; wrote the commented example instead.");
+        return write_example(path, force);
+    }
+    // Appending to a hand-written file: keep it, and only propose what it lacks.
+    let existing = match path.exists() && !force {
+        true => Some(
+            std::fs::read_to_string(path)
+                .with_context(|| format!("cannot read {}", path.display()))?,
+        ),
+        false => None,
+    };
+    let presets = match &existing {
+        Some(content) => {
+            let taken = config::names_in(content).with_context(|| {
+                format!(
+                    "{} is not valid; fix it or rerun with --force",
+                    path.display()
+                )
+            })?;
+            let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
+            detect::new_presets(detected, &taken)
+        }
+        None => detect::dedupe(detected, &[]),
+    };
+    if presets.is_empty() {
+        println!(
+            "Nothing new to add: every detected VPN is already in {}.",
+            path.display()
+        );
+        return Ok(());
+    }
+    let Some(chosen) = ui::select_presets(&presets)? else {
+        println!("\nCancelled.");
+        return Ok(());
+    };
+    if chosen.is_empty() {
+        println!("Nothing selected.");
+        return Ok(());
+    }
+    let blocks: Vec<String> = chosen
+        .iter()
+        .map(|&i| detect::render(&presets[i]))
+        .collect();
+    let n = blocks.len();
+    let (content, summary) = match &existing {
+        Some(content) => (
+            config::append_presets(content, &blocks)?,
+            format!("Added {n} VPNs to {}", path.display()),
+        ),
+        None => (
+            format!("{}\n{}", config::example_header(), blocks.join("\n")),
+            format!("Wrote {} ({n} VPNs)", path.display()),
+        ),
+    };
+    write_file(path, &content)?;
+    println!("{summary}. Check it with `vpns config check`.");
+    Ok(())
+}
+
+fn write_example(path: &Path, force: bool) -> anyhow::Result<()> {
     if path.exists() && !force {
         bail!(
             "{} already exists (use --force to overwrite)",
             path.display()
         );
     }
+    write_file(path, config::EXAMPLE)?;
+    println!("Wrote an example configuration to {}", path.display());
+    println!("Edit it, then run `vpns`.");
+    Ok(())
+}
+
+fn write_file(path: &Path, content: &str) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("cannot create {}", parent.display()))?;
     }
-    std::fs::write(path, config::EXAMPLE)
-        .with_context(|| format!("cannot write {}", path.display()))?;
-    println!("Wrote an example configuration to {}", path.display());
-    println!("Edit it, then run `vpns`.");
-    Ok(())
+    std::fs::write(path, content).with_context(|| format!("cannot write {}", path.display()))
 }

@@ -186,6 +186,38 @@ impl Config {
     }
 }
 
+/// The leading comment lines of [`EXAMPLE`], each ending with a newline.
+pub fn example_header() -> String {
+    EXAMPLE
+        .lines()
+        .take_while(|line| line.starts_with('#'))
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
+/// Names of the VPNs defined in `existing`, which must be a valid configuration.
+pub fn names_in(existing: &str) -> Result<Vec<String>, ConfigError> {
+    Ok(Config::from_toml(existing)?
+        .vpns
+        .into_iter()
+        .map(|v| v.name)
+        .collect())
+}
+
+/// `existing` followed by `blocks`, keeping every byte of `existing` as is.
+///
+/// Refuses an invalid `existing`: appending to it would hide its error.
+pub fn append_presets(existing: &str, blocks: &[String]) -> Result<String, ConfigError> {
+    Config::from_toml(existing)?;
+    let mut out = existing.to_string();
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str(&blocks.join("\n"));
+    Ok(out)
+}
+
 /// `$XDG_CONFIG_HOME/vpn-switcher/config.toml` (or `~/.config/...`).
 pub fn default_path() -> Result<PathBuf, ConfigError> {
     let base = etcetera::choose_base_strategy().map_err(|_| ConfigError::NoConfigDir)?;
@@ -330,5 +362,47 @@ mod tests {
     fn flag_path_wins() {
         let path = PathBuf::from("/tmp/explicit.toml");
         assert_eq!(resolve_path(Some(path.clone())).unwrap(), path);
+    }
+
+    const HAND_WRITTEN: &str = "# mine\n[[vpn]]\nname = \"a\"\nup = \"u\"\ndown = \"d\"";
+
+    #[test]
+    fn append_preserves_existing_bytes() {
+        let block = "[[vpn]]\nname = \"b\"\nup = \"u\"\ndown = \"d\"\n".to_string();
+        let out = append_presets(HAND_WRITTEN, &[block]).unwrap();
+        assert!(out.starts_with(HAND_WRITTEN));
+        assert_eq!(Config::from_toml(&out).unwrap().vpns.len(), 2);
+        // With a trailing newline: one blank line separates the blocks.
+        let with_newline = format!("{HAND_WRITTEN}\n");
+        let out = append_presets(&with_newline, &["# x\n".to_string()]).unwrap();
+        assert!(out.starts_with(&with_newline));
+        assert!(out.ends_with("\n\n# x\n"));
+    }
+
+    #[test]
+    fn append_refuses_invalid_existing() {
+        let dup = format!("{HAND_WRITTEN}\n{HAND_WRITTEN}\n");
+        assert!(matches!(
+            append_presets(&dup, &[]),
+            Err(ConfigError::DuplicateName(_))
+        ));
+    }
+
+    #[test]
+    fn names_in_lists_names() {
+        assert_eq!(names_in(HAND_WRITTEN).unwrap(), ["a"]);
+        assert!(names_in("[[vpn]]").is_err());
+    }
+
+    #[test]
+    fn example_header_is_the_leading_comments() {
+        let header = example_header();
+        assert!(header.starts_with("# vpn-switcher configuration"));
+        assert!(header.lines().all(|l| l.starts_with('#')));
+        assert!(header.ends_with('\n'));
+        assert!(matches!(
+            Config::from_toml(&header),
+            Err(ConfigError::Empty)
+        ));
     }
 }

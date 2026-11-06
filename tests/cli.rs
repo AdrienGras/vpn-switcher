@@ -183,6 +183,24 @@ fn init_writes_example_and_refuses_overwrite() {
 }
 
 #[test]
+fn init_example_flag_skips_detection() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    Command::cargo_bin("vpns")
+        .unwrap()
+        .arg("--config")
+        .arg(&path)
+        .args(["init", "--example"])
+        .assert()
+        .success();
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("protonvpn connect")
+    );
+}
+
+#[test]
 fn config_env_var_is_used() {
     let dir = setup(FILE_VPNS);
     Command::cargo_bin("vpns")

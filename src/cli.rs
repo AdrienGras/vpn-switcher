@@ -45,11 +45,14 @@ pub enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
-    /// Write an example configuration file
+    /// Create the configuration from the VPNs installed on this machine
     Init {
         /// Overwrite an existing file
         #[arg(long)]
         force: bool,
+        /// Write the commented example instead of detecting installed VPNs
+        #[arg(long)]
+        example: bool,
     },
     /// Print a shell completion script
     Completions {

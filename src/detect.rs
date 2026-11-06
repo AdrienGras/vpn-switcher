@@ -75,6 +75,16 @@ pub fn dedupe(presets: Vec<Preset>, taken: &[&str]) -> Vec<Preset> {
         .collect()
 }
 
+/// Presets worth proposing next to a config that already defines `taken`: the
+/// ones already configured are dropped, then the remaining collisions get a suffix.
+pub fn new_presets(presets: Vec<Preset>, taken: &[&str]) -> Vec<Preset> {
+    let fresh = presets
+        .into_iter()
+        .filter(|p| !taken.contains(&p.name.as_str()))
+        .collect();
+    dedupe(fresh, taken)
+}
+
 fn toml_string(s: &str) -> String {
     toml::Value::String(s.to_string()).to_string()
 }
@@ -584,6 +594,16 @@ mod tests {
             .map(|p| p.name)
             .collect();
         assert_eq!(names, ["tailscale", "tailscale-2", "acme-2"]);
+    }
+
+    #[test]
+    fn new_presets_drops_configured_and_suffixes_the_rest() {
+        let presets = vec![preset("a"), preset("b"), preset("b")];
+        let names: Vec<String> = new_presets(presets, &["a"])
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, ["b", "b-2"]);
     }
 
     #[test]

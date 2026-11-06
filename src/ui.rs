@@ -8,10 +8,11 @@ use std::time::Duration;
 use anyhow::anyhow;
 use indicatif::{ProgressBar, ProgressStyle};
 use inquire::ui::{Color, RenderConfig, StyleSheet, Styled};
-use inquire::{InquireError, Select};
+use inquire::{InquireError, MultiSelect, Select};
 use owo_colors::{OwoColorize, Stream};
 
 use crate::config::Vpn;
+use crate::detect::Preset;
 use crate::runner::Runner;
 use crate::state::{Observation, VpnState, probe_all};
 use crate::switch::{Action, Step};
@@ -142,6 +143,63 @@ pub fn pick(vpns: &[Vpn], states: &[VpnState]) -> anyhow::Result<PickerOutcome> 
     match answer {
         Ok(choice) => Ok(PickerOutcome::Target(choice.target)),
         Err(err) => picker_outcome(err),
+    }
+}
+
+/// A detected preset in the selection list.
+struct PresetChoice {
+    index: usize,
+    label: String,
+}
+
+impl fmt::Display for PresetChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+/// Lets the user pick which detected presets to write, all checked at first.
+///
+/// Returns the chosen indexes into `presets`, or `None` on Esc or Ctrl-C.
+pub fn select_presets(presets: &[Preset]) -> anyhow::Result<Option<Vec<usize>>> {
+    let width = presets
+        .iter()
+        .map(|p| p.name.chars().count())
+        .max()
+        .unwrap_or_default();
+    let choices: Vec<PresetChoice> = presets
+        .iter()
+        .enumerate()
+        .map(|(index, p)| {
+            let mut label = format!("{:<width$}  {}", p.name, p.source);
+            if !p.verified {
+                label.push_str(&format!(
+                    " · {}",
+                    "unverified".if_supports_color(Stream::Stderr, |s| s.dimmed())
+                ));
+            }
+            if p.template {
+                label.push_str(" · template");
+            }
+            PresetChoice { index, label }
+        })
+        .collect();
+    let all: Vec<usize> = (0..choices.len()).collect();
+    let title = format!("Found {} VPN profiles:", presets.len());
+    let answer = MultiSelect::new(&title, choices)
+        .with_default(&all)
+        .with_help_message("space toggle · enter write · esc cancel")
+        .with_render_config(render_config())
+        .with_formatter(&|chosen| format!("{} selected", chosen.len()))
+        .without_filtering()
+        .with_vim_mode(true)
+        .prompt();
+    match answer {
+        Ok(chosen) => Ok(Some(chosen.into_iter().map(|c| c.index).collect())),
+        Err(err) => match picker_outcome(err)? {
+            PickerOutcome::Cancelled | PickerOutcome::Interrupted => Ok(None),
+            PickerOutcome::Target(_) => unreachable!("picker_outcome never returns a target"),
+        },
     }
 }
 
