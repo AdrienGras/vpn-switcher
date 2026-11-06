@@ -65,8 +65,8 @@
 
   [[vpn]]
   name = "tailscale"
-  up = "sudo tailscale up"
-  down = "sudo tailscale down"
+  up = "tailscale up"           # prefix with sudo if you are not the tailscale operator
+  down = "tailscale down"
   status = "tailscale status"   # exit 0 = up, 1 = down (defaults)
 
   [[vpn]]
