@@ -7,8 +7,14 @@ description = "Switch between mutually incompatible VPNs from a tidy CLI"
 license = "MIT"
 repository = "https://github.com/AdrienGras/vpn-switcher"
 readme = "README.md"
+include = ["src/**/*", "tests/**/*", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "CHANGELOG.md"]
 keywords = ["vpn", "cli", "tailscale", "netbird", "protonvpn"]
 categories = ["command-line-utilities"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/vpns-{ target }.tar.gz"
+bin-dir = "vpns-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
 
 [[bin]]
 name = "vpns"
