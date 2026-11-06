@@ -20,11 +20,21 @@ small TOML file, so any VPN with a command-line client works.
 
 ## Install
 
+Prebuilt Linux binaries (x86_64, aarch64) are attached to each
+[release](https://github.com/AdrienGras/vpn-switcher/releases):
+
+```sh
+curl -sSL https://github.com/AdrienGras/vpn-switcher/releases/latest/download/vpns-v0.2.0-x86_64-unknown-linux-gnu.tar.gz \
+  | tar xz --strip-components=1 -C ~/.local/bin vpns-v0.2.0-x86_64-unknown-linux-gnu/vpns
+```
+
+Or build from source (Rust 1.99 or newer):
+
 ```sh
 cargo install --git https://github.com/AdrienGras/vpn-switcher
 ```
 
-Requires Rust 1.99 or newer. Linux is the primary target; any Unix should work.
+Linux is the primary target; any Unix should work.
 
 ## Usage
 
@@ -35,21 +45,27 @@ vpns status          # state of every VPN
 vpns up tailscale    # switch: stop the others, then start tailscale
 vpns down tailscale  # stop one VPN
 vpns off             # stop every VPN
+vpns -v status       # also explain how each state was determined
 ```
 
 When switching, every other VPN that is up — or whose state cannot be
 determined — is stopped first, then the target is started, and the resulting
-state is shown. If a command fails, `vpns` stops right there and exits with a
-non-zero code.
+state is shown. If a command fails, `vpns` stops right there, reports its exit
+code and exits with a non-zero code. The one exception: stopping a VPN whose
+state is unknown is best-effort, since it was probably down already — if that
+fails, `vpns` warns and carries on.
 
 Up and down commands run attached to your terminal, so `sudo` can ask for a
-password. In the picker, Esc or Ctrl-C cancels without touching anything.
+password. Ctrl-C during one of them lets it end, then `vpns` shows the
+resulting state. In the picker, Esc or Ctrl-C cancels without touching
+anything. Colors follow `NO_COLOR`.
 
 ## Configuration
 
 The file lives at `$XDG_CONFIG_HOME/vpn-switcher/config.toml`
 (`~/.config/vpn-switcher/config.toml` by default). Override it with
-`--config <path>` or the `VPNS_CONFIG` environment variable.
+`--config <path>` or the `VPNS_CONFIG` environment variable (an empty value
+counts as unset).
 
 ```toml
 [[vpn]]
@@ -75,7 +91,7 @@ up_pattern = "Management: Connected"
 
 | Key          | Required | Meaning                                                        |
 |--------------|----------|----------------------------------------------------------------|
-| `name`       | yes      | Identifier used on the command line; must be unique.           |
+| `name`       | yes      | Identifier used on the command line; unique, not empty.        |
 | `up`         | yes      | Shell command starting the VPN.                                |
 | `down`       | yes      | Shell command stopping the VPN.                                |
 | `status`     | no       | Shell command reporting the state. Without it, the state is `unknown`. |
