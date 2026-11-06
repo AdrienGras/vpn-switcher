@@ -186,6 +186,61 @@ impl Config {
     }
 }
 
+/// The leading comment lines of [`EXAMPLE`], each ending with a newline.
+pub fn example_header() -> String {
+    EXAMPLE
+        .lines()
+        .take_while(|line| line.starts_with('#'))
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
+/// Names of the VPNs defined in `existing`, which must be a valid configuration.
+///
+/// A file with no VPN at all (empty, or only comments) defines no names.
+pub fn names_in(existing: &str) -> Result<Vec<String>, ConfigError> {
+    match Config::from_toml(existing) {
+        Ok(config) => Ok(config.vpns.into_iter().map(|v| v.name).collect()),
+        Err(ConfigError::Empty) => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Names found in commented-out `name = "..."` lines of `existing`.
+///
+/// Commented templates (and VPNs the user disabled by hand) are not active
+/// VPNs, but they must not be proposed again. Lines that do not parse are ignored.
+pub fn commented_names(existing: &str) -> Vec<String> {
+    existing
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim_start().strip_prefix('#')?.trim();
+            let value = rest.strip_prefix("name")?.trim_start().strip_prefix('=')?;
+            let table: toml::Table = toml::from_str(&format!("name = {}", value.trim())).ok()?;
+            table.get("name")?.as_str().map(str::to_string)
+        })
+        .collect()
+}
+
+/// `existing` followed by `blocks`, keeping every byte of `existing` as is.
+///
+/// Refuses an invalid `existing` (appending would hide its error) and an
+/// invalid result. A file with no VPN yet (empty, or only comments) is fine,
+/// and so is a result made of templates only.
+pub fn append_presets(existing: &str, blocks: &[String]) -> Result<String, ConfigError> {
+    names_in(existing)?;
+    let mut out = existing.to_string();
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str(&blocks.join("\n"));
+    match Config::from_toml(&out) {
+        Ok(_) | Err(ConfigError::Empty) => Ok(out),
+        Err(e) => Err(e),
+    }
+}
+
 /// `$XDG_CONFIG_HOME/vpn-switcher/config.toml` (or `~/.config/...`).
 pub fn default_path() -> Result<PathBuf, ConfigError> {
     let base = etcetera::choose_base_strategy().map_err(|_| ConfigError::NoConfigDir)?;
@@ -330,5 +385,117 @@ mod tests {
     fn flag_path_wins() {
         let path = PathBuf::from("/tmp/explicit.toml");
         assert_eq!(resolve_path(Some(path.clone())).unwrap(), path);
+    }
+
+    const HAND_WRITTEN: &str = "# mine\n[[vpn]]\nname = \"a\"\nup = \"u\"\ndown = \"d\"";
+
+    #[test]
+    fn append_preserves_existing_bytes() {
+        let block = "[[vpn]]\nname = \"b\"\nup = \"u\"\ndown = \"d\"\n".to_string();
+        let out = append_presets(HAND_WRITTEN, &[block]).unwrap();
+        assert!(out.starts_with(HAND_WRITTEN));
+        assert_eq!(Config::from_toml(&out).unwrap().vpns.len(), 2);
+        // With a trailing newline: one blank line separates the blocks.
+        let with_newline = format!("{HAND_WRITTEN}\n");
+        let out = append_presets(&with_newline, &["# x\n".to_string()]).unwrap();
+        assert!(out.starts_with(&with_newline));
+        assert!(out.ends_with("\n\n# x\n"));
+    }
+
+    #[test]
+    fn append_refuses_invalid_existing() {
+        let dup = format!("{HAND_WRITTEN}\n{HAND_WRITTEN}\n");
+        assert!(matches!(
+            append_presets(&dup, &[]),
+            Err(ConfigError::DuplicateName(_))
+        ));
+    }
+
+    #[test]
+    fn names_in_lists_names() {
+        assert_eq!(names_in(HAND_WRITTEN).unwrap(), ["a"]);
+        assert!(names_in("[[vpn]]").is_err());
+    }
+
+    const INLINE: &str = "vpn = [{ name = \"a\", up = \"u\", down = \"d\" }]\n";
+
+    #[test]
+    fn append_refuses_when_result_is_invalid() {
+        let block = "[[vpn]]\nname = \"b\"\nup = \"u\"\ndown = \"d\"\n".to_string();
+        assert!(Config::from_toml(INLINE).is_ok());
+        assert!(matches!(
+            append_presets(INLINE, &[block]),
+            Err(ConfigError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn append_to_comment_only_file_keeps_its_bytes() {
+        let existing = "# nothing yet\n# still nothing";
+        let block = "[[vpn]]\nname = \"b\"\nup = \"u\"\ndown = \"d\"\n".to_string();
+        let out = append_presets(existing, &[block]).unwrap();
+        assert!(out.starts_with(existing));
+        assert_eq!(Config::from_toml(&out).unwrap().vpns.len(), 1);
+        // Templates only: still no active VPN, which is fine.
+        let out = append_presets(existing, &["# t\n".to_string()]).unwrap();
+        assert!(out.starts_with(existing));
+    }
+
+    #[test]
+    fn names_in_empty_file_is_empty() {
+        assert!(names_in("").unwrap().is_empty());
+        assert!(names_in("# only comments\n").unwrap().is_empty());
+    }
+
+    #[test]
+    fn example_header_is_the_leading_comments() {
+        let header = example_header();
+        assert!(header.starts_with("# vpn-switcher configuration"));
+        assert!(header.lines().all(|l| l.starts_with('#')));
+        assert!(header.ends_with('\n'));
+        assert!(matches!(
+            Config::from_toml(&header),
+            Err(ConfigError::Empty)
+        ));
+    }
+
+    fn template_preset(name: &str) -> crate::detect::Preset {
+        crate::detect::Preset {
+            name: name.to_string(),
+            source: "test".to_string(),
+            up: "wg-quick up NAME".to_string(),
+            down: "wg-quick down NAME".to_string(),
+            status: None,
+            up_pattern: None,
+            down_codes: None,
+            verified: false,
+            template: true,
+            note: Some("replace NAME".to_string()),
+        }
+    }
+
+    #[test]
+    fn commented_names_reads_a_rendered_template() {
+        let block = crate::detect::render(&template_preset("wg-quick"));
+        assert_eq!(commented_names(&block), ["wg-quick"]);
+    }
+
+    #[test]
+    fn commented_names_handles_escapes_and_ignores_noise() {
+        let text = "# name = \"a \\\"b\\\"\"\n#name = \"c\"\n#   name = 'd'\n\
+                    # name = broken\n# name_x = \"no\"\n# nothing\nname = \"active\"\n\
+                    # name = \"e\" trailing\n";
+        assert_eq!(commented_names(text), ["a \"b\"", "c", "d"]);
+    }
+
+    #[test]
+    fn commented_template_is_not_offered_again() {
+        let block = crate::detect::render(&template_preset("wg-quick"));
+        let existing = format!("{}\n{block}", example_header());
+        let mut taken = names_in(&existing).unwrap();
+        taken.extend(commented_names(&existing));
+        let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
+        let offered = crate::detect::new_presets(vec![template_preset("wg-quick")], &taken);
+        assert!(offered.is_empty());
     }
 }

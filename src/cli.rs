@@ -40,10 +40,36 @@ pub enum Command {
     },
     /// Stop every VPN
     Off,
-    /// Write an example configuration file
+    /// Inspect, edit or validate the configuration
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+    /// Create the configuration from the VPNs installed on this machine
     Init {
         /// Overwrite an existing file
         #[arg(long)]
         force: bool,
+        /// Write the commented example instead of detecting installed VPNs
+        #[arg(long)]
+        example: bool,
     },
+    /// Print a shell completion script
+    Completions {
+        /// Shell to generate the script for
+        shell: clap_complete::Shell,
+    },
+    /// Print the man page in roff format
+    #[command(hide = true)]
+    Man,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigAction {
+    /// Print the configuration file path
+    Path,
+    /// Open the configuration in $VISUAL or $EDITOR, then check it
+    Edit,
+    /// Validate the configuration and test every status command
+    Check,
 }

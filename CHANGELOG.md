@@ -4,6 +4,31 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-11-06
+
+### Added
+- `vpns init` detects the installed VPNs (Proton VPN, Tailscale, NetBird,
+  NetworkManager connections, WireGuard and OpenVPN profiles, OpenConnect,
+  openfortivpn, Mullvad, Cloudflare WARP, macOS network services) and writes
+  presets for the ones you pick. Detection is read-only. When a config file
+  already exists, `init` appends only the VPNs it lacks.
+- `vpns init --example` writes the commented example; `--force` overwrites.
+- `vpns config path`, `vpns config edit` and `vpns config check`. `check`
+  validates the file and tests every status command.
+- `vpns completions <shell>` for bash, zsh, fish, elvish and PowerShell, and a
+  man page, both shipped in the release archives.
+- macOS binaries (x86_64 and aarch64) next to the Linux ones.
+- `cargo binstall vpn-switcher` and crates.io publishing.
+- Build provenance attestations for the release archives
+  (`gh attestation verify`).
+- README with presets for each detected VPN, FAQ and demo GIF; `SECURITY.md`
+  and `RELEASING.md`.
+
+### Changed
+- Minimum supported Rust version is 1.87.
+- The library API is hidden from the documentation: `vpn-switcher` is a
+  command-line tool, not a library.
+
 ## [0.2.0] - 2026-11-06
 
 ### Added
@@ -35,5 +60,6 @@ Initial release: interactive picker, `status`, `up`, `down`, `off` and `init`
 commands, TOML configuration with exit-code or regex state detection, status
 probes run in parallel with a 10 s timeout.
 
+[0.3.0]: https://github.com/AdrienGras/vpn-switcher/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/AdrienGras/vpn-switcher/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/AdrienGras/vpn-switcher/releases/tag/v0.1.0
