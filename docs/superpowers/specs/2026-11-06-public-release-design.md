@@ -90,8 +90,9 @@ Wrote ~/.config/vpn-switcher/config.toml (5 VPNs). Check it with `vpns config ch
   fichier existe, sauf `--force`). Si rien n'est détecté, le message le dit.
 - **`--example`** : force l'écriture de l'exemple commenté sans détection (utile en script
   et dans les tests).
-- Esc / Ctrl-C dans la liste : annule sans rien écrire, code 130 comme le sélecteur actuel
-  (aligner sur le comportement existant de `vpns` en cas d'annulation).
+- Esc / Ctrl-C dans la liste : annule sans rien écrire, comme le sélecteur actuel (qui
+  affiche `Cancelled.` et sort en **0** ; correction : une version antérieure de ce
+  document disait 130 par erreur).
 - Après écriture : message invitant à lancer `vpns config check`.
 
 Le bloc TOML écrit pour chaque profil porte une ligne de commentaire indiquant sa source
