@@ -70,14 +70,19 @@ fn toml_string(s: &str) -> String {
     toml::Value::String(s.to_string()).to_string()
 }
 
+/// A line break would end a `#` comment early: flatten it to a space.
+fn comment_text(s: &str) -> String {
+    s.replace(['\n', '\r'], " ")
+}
+
 /// Renders one `[[vpn]]` block (with its comments), ending with a newline.
 pub fn render(preset: &Preset) -> String {
-    let mut out = format!("# detected: {}\n", preset.source);
+    let mut out = format!("# detected: {}\n", comment_text(&preset.source));
     if !preset.verified {
         out.push_str("# preset not verified on a real VPN — run `vpns config check`\n");
     }
     if let Some(note) = &preset.note {
-        out.push_str(&format!("# {note}\n"));
+        out.push_str(&format!("# {}\n", comment_text(note)));
     }
     let mut table = vec![
         "[[vpn]]".to_string(),
@@ -196,5 +201,15 @@ mod tests {
         p.down_codes = Some(vec![3]);
         let config = Config::from_toml(&render(&p)).unwrap();
         assert_eq!(config.vpns[0].down_codes, [3]);
+    }
+
+    #[test]
+    fn newline_in_source_or_note_cannot_end_the_comment() {
+        let mut p = preset("a");
+        p.source = "evil\n[[vpn]]\r".to_string();
+        p.note = Some("x\r\nname = \"y\"".to_string());
+        let out = render(&p);
+        assert!(out.lines().take(2).all(|l| l.starts_with('#')));
+        assert_eq!(Config::from_toml(&out).unwrap().vpns.len(), 1);
     }
 }
