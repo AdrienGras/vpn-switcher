@@ -23,7 +23,7 @@ cp README.md LICENSE CHANGELOG.md "$name/"
 "$gen_bin" completions fish > "$name/completions/vpns.fish"
 "$gen_bin" man > "$name/vpns.1"
 
-tar czf "$name.tar.gz" "$name"
+COPYFILE_DISABLE=1 tar czf "$name.tar.gz" "$name"
 if command -v sha256sum >/dev/null 2>&1; then
   sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
 else
