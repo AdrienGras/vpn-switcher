@@ -57,12 +57,14 @@ gh attestation verify vpns-<target>.tar.gz --repo AdrienGras/vpn-switcher
 
 ```sh
 # bash
+mkdir -p ~/.local/share/bash-completion/completions
 vpns completions bash > ~/.local/share/bash-completion/completions/vpns
 
 # zsh (any directory of your $fpath; this one must exist and be in it)
 vpns completions zsh > ~/.zfunc/_vpns
 
 # fish
+mkdir -p ~/.config/fish/completions
 vpns completions fish > ~/.config/fish/completions/vpns.fish
 ```
 
@@ -82,8 +84,9 @@ connections, WireGuard and OpenVPN profiles, Mullvad, WARP, macOS network
 services, and templates for OpenConnect and openfortivpn) and lets you tick the
 ones to keep. It only looks: it never starts or stops a VPN. If a config file
 already exists, `init` appends the VPNs it lacks and leaves the rest of your
-file alone. Without a terminal, or with `--example`, it writes a commented
-example instead; `--force` overwrites an existing file.
+file alone. Without a terminal, with `--example`, or when nothing is detected,
+it writes a commented example instead (an existing file is left unchanged);
+`--force` overwrites an existing file.
 
 Presets that were not tried on a real VPN are marked in the generated file.
 `vpns config check` tells you whether each status command is readable.
