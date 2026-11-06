@@ -2,7 +2,7 @@
 name = "vpn-switcher"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.99"
+rust-version = "1.87"
 description = "Switch between mutually incompatible VPNs from a tidy CLI"
 license = "MIT"
 repository = "https://github.com/AdrienGras/vpn-switcher"
