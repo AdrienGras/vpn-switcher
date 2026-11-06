@@ -157,7 +157,10 @@ impl Sources<'_> {
 
     /// True if an executable file called `bin` sits in one of the `$PATH` entries.
     fn has_bin(&self, bin: &str) -> bool {
-        std::env::split_paths(&self.path).any(|dir| is_executable(&dir.join(bin)))
+        std::env::split_paths(&self.path)
+            // An empty entry would mean the current directory: skip it.
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .any(|dir| is_executable(&dir.join(bin)))
     }
 
     /// Output of a read-only listing command; `None` unless it exited with 0.
@@ -324,7 +327,7 @@ fn nmcli(src: &Sources) -> Vec<Preset> {
                     &format!("nmcli connection down id {q}"),
                     &format!("nmcli -g GENERAL.STATE connection show id {q}"),
                 ],
-                Some("^activated$"),
+                Some("(?m)^activated$"),
             )
         })
         .collect()
@@ -768,7 +771,7 @@ mod tests {
             detected[1].status.as_deref(),
             Some("nmcli -g GENERAL.STATE connection show id 'globex wg'")
         );
-        assert_eq!(detected[0].up_pattern.as_deref(), Some("^activated$"));
+        assert_eq!(detected[0].up_pattern.as_deref(), Some("(?m)^activated$"));
         assert!(detected.iter().all(|p| !p.verified && !p.template));
     }
 
@@ -950,6 +953,66 @@ mod tests {
                 p.source,
                 if p.template { " (template)" } else { "" }
             );
+        }
+    }
+
+    #[test]
+    fn empty_path_entry_is_ignored() {
+        let bins = bin_dir(&[]);
+        let cwd_bin = std::env::current_dir().unwrap().join("netbird");
+        assert!(!cwd_bin.exists());
+        let runner = FakeRunner::new(&[]);
+        let mut src = sources("linux", &bins, &runner);
+        src.path = std::env::join_paths(["", "relative-dir-that-does-not-exist"]).unwrap();
+        assert!(!src.has_bin("netbird"));
+        assert!(src.path.to_string_lossy().starts_with(':'));
+    }
+
+    #[test]
+    fn up_patterns_match_realistic_output_through_the_real_config_path() {
+        use crate::state::{VpnState, observe};
+        let bins = bin_dir(&["protonvpn", "netbird", "nmcli", "mullvad", "scutil"]);
+        let (nm_cmd, nm_probe) = FakeRunner::ok(NMCLI, "acme:vpn\n");
+        let (sc_cmd, sc_probe) = FakeRunner::ok(SCUTIL, "* (Connected) 1A \"Office\" [PPP/L2TP]\n");
+        let runner = FakeRunner::new(&[(&nm_cmd, nm_probe), (&sc_cmd, sc_probe)]);
+        let mut presets = detect(&sources("linux", &bins, &runner));
+        presets.extend(detect(&sources("macos", &bins, &runner)));
+
+        let up_samples: &[(&str, &str)] = &[
+            ("proton", "Status: Connected\nServer: x\n"),
+            (
+                "netbird",
+                "Daemon version: 0.1\nManagement: Connected\nSignal: Connected\n",
+            ),
+            ("acme", "activated\n"),
+            (
+                "mullvad",
+                "Connected to se-got-wg-001 in Gothenburg, Sweden\n",
+            ),
+            ("office", "Connected\nExtended Status <dictionary> {\n}\n"),
+        ];
+        let down_samples: &[(&str, &str)] = &[
+            ("proton", "Status: Disconnected\n"),
+            ("netbird", "Management: Disconnected\n"),
+            ("acme", "\n"),
+            ("acme", ""),
+            ("mullvad", "Disconnected\n"),
+            ("office", "Disconnected\n"),
+        ];
+        let state = |name: &str, output: &str| {
+            let preset = presets.iter().find(|p| p.name == name).unwrap();
+            let config = Config::from_toml(&render(preset)).unwrap();
+            let probe = Probe::Exited {
+                code: Some(0),
+                output: output.to_string(),
+            };
+            observe(&config.vpns[0], &probe).state
+        };
+        for (name, output) in up_samples {
+            assert_eq!(state(name, output), VpnState::Up, "{name}: {output:?}");
+        }
+        for (name, output) in down_samples {
+            assert_eq!(state(name, output), VpnState::Down, "{name}: {output:?}");
         }
     }
 }
