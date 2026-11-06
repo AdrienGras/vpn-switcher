@@ -527,3 +527,42 @@ fn config_edit_without_file_suggests_init() {
         .failure()
         .stderr(predicate::str::contains("vpns init"));
 }
+
+#[test]
+fn completions_bash_mentions_vpns() {
+    let dir = tempfile::tempdir().unwrap();
+    vpns(dir.path())
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("_vpns"));
+}
+
+#[test]
+fn completions_rejects_unknown_shell() {
+    let dir = tempfile::tempdir().unwrap();
+    vpns(dir.path())
+        .args(["completions", "tcsh"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn man_page_is_roff() {
+    let dir = tempfile::tempdir().unwrap();
+    vpns(dir.path())
+        .arg("man")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".TH vpns"));
+}
+
+#[test]
+fn man_is_hidden_from_help() {
+    let dir = tempfile::tempdir().unwrap();
+    vpns(dir.path())
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match(r"(?m)^\s+man\s").unwrap().not());
+}

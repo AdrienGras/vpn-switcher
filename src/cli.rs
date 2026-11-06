@@ -51,6 +51,14 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Print a shell completion script
+    Completions {
+        /// Shell to generate the script for
+        shell: clap_complete::Shell,
+    },
+    /// Print the man page in roff format
+    #[command(hide = true)]
+    Man,
 }
 
 #[derive(Debug, Subcommand)]

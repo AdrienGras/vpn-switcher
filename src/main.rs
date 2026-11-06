@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context as _, anyhow, bail};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 use vpn_switcher::cli::{Cli, Command, ConfigAction};
 use vpn_switcher::config::{self, Config, ConfigError};
@@ -39,6 +39,19 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
+    // These need no configuration, so they work without HOME or XDG variables.
+    match cli.command {
+        Some(Command::Completions { shell }) => {
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "vpns", &mut std::io::stdout());
+            return Ok(());
+        }
+        Some(Command::Man) => {
+            clap_mangen::Man::new(Cli::command()).render(&mut std::io::stdout())?;
+            return Ok(());
+        }
+        _ => {}
+    }
     let path = config::resolve_path(cli.config)?;
     let ctx = Context {
         runner: &ShellRunner,
@@ -46,6 +59,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     };
     match cli.command.unwrap_or(Command::Switch) {
         Command::Init { force } => init(&path, force),
+        Command::Completions { .. } | Command::Man => unreachable!("handled above"),
         Command::Config { action } => match action {
             ConfigAction::Path => {
                 println!("{}", path.display());
