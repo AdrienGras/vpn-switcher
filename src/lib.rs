@@ -9,6 +9,8 @@ pub mod cli;
 #[doc(hidden)]
 pub mod config;
 #[doc(hidden)]
+pub mod detect;
+#[doc(hidden)]
 pub mod interrupt;
 #[doc(hidden)]
 pub mod runner;
