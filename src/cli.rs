@@ -40,10 +40,25 @@ pub enum Command {
     },
     /// Stop every VPN
     Off,
+    /// Inspect, edit or validate the configuration
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
     /// Write an example configuration file
     Init {
         /// Overwrite an existing file
         #[arg(long)]
         force: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigAction {
+    /// Print the configuration file path
+    Path,
+    /// Open the configuration in $VISUAL or $EDITOR, then check it
+    Edit,
+    /// Validate the configuration and test every status command
+    Check,
 }

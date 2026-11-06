@@ -65,6 +65,16 @@ pub fn states(observations: &[Observation]) -> Vec<VpnState> {
     observations.iter().map(|o| o.state).collect()
 }
 
+/// Indices of the VPNs that have a status command but whose state is unknown.
+pub fn unreadable(vpns: &[Vpn], observations: &[Observation]) -> Vec<usize> {
+    vpns.iter()
+        .zip(observations)
+        .enumerate()
+        .filter(|(_, (vpn, seen))| vpn.status.is_some() && seen.state == VpnState::Unknown)
+        .map(|(index, _)| index)
+        .collect()
+}
+
 /// Interprets the result of a VPN's status command.
 pub fn classify(vpn: &Vpn, probe: &Probe) -> VpnState {
     observe(vpn, probe).state
@@ -257,5 +267,38 @@ mod tests {
                 VpnState::Unknown
             ]
         );
+    }
+
+    #[test]
+    fn unreadable_ignores_vpns_without_status() {
+        let config = Config::from_toml(
+            r#"
+            [[vpn]]
+            name = "a"
+            up = "u"
+            down = "d"
+            status = "s"
+            [[vpn]]
+            name = "b"
+            up = "u"
+            down = "d"
+            [[vpn]]
+            name = "c"
+            up = "u"
+            down = "d"
+            status = "s"
+            "#,
+        )
+        .unwrap();
+        let obs = |state| Observation {
+            state,
+            detail: String::new(),
+        };
+        let observations = [
+            obs(VpnState::Unknown),
+            obs(VpnState::Unknown),
+            obs(VpnState::Down),
+        ];
+        assert_eq!(unreadable(&config.vpns, &observations), vec![0]);
     }
 }

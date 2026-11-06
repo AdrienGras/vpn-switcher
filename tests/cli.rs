@@ -354,3 +354,176 @@ fn sigterm_during_up_stops_the_command() {
     kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM).unwrap();
     assert_interrupted(child, start);
 }
+
+const THREE_VPNS: &str = r#"
+[[vpn]]
+name = "alpha"
+up = "true"
+down = "true"
+status = "true"
+[[vpn]]
+name = "beta"
+up = "true"
+down = "true"
+status = "false"
+[[vpn]]
+name = "gamma"
+up = "true"
+down = "true"
+"#;
+
+fn one_vpn(extra: &str) -> String {
+    format!("[[vpn]]\nname = \"alpha\"\nup = \"true\"\ndown = \"true\"\n{extra}\n")
+}
+
+#[test]
+fn config_path_prints_resolved_path() {
+    let dir = setup(THREE_VPNS);
+    let expected = format!("{}\n", dir.path().join("config.toml").display());
+    vpns(dir.path())
+        .args(["config", "path"])
+        .assert()
+        .success()
+        .stdout(expected);
+
+    let empty = tempfile::tempdir().unwrap();
+    vpns(empty.path())
+        .args(["config", "path"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("does not exist yet"))
+        .stderr(predicate::str::contains("vpns init"));
+}
+
+#[test]
+fn config_check_passes_when_every_status_is_readable() {
+    let dir = setup(THREE_VPNS);
+    vpns(dir.path())
+        .args(["config", "check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("3 VPNs, valid"))
+        .stdout(predicate::str::is_match("gamma.*no status command").unwrap());
+}
+
+#[test]
+fn config_check_fails_on_unreadable_status() {
+    let dir = setup(&one_vpn("status = \"exit 7\""));
+    vpns(dir.path())
+        .args(["config", "check"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("exit code 7"))
+        .stderr(predicate::str::contains(
+            "1 VPN cannot be read: its status command is probably wrong",
+        ));
+
+    let two = setup(
+        r#"
+        [[vpn]]
+        name = "alpha"
+        up = "true"
+        down = "true"
+        status = "exit 7"
+        [[vpn]]
+        name = "beta"
+        up = "true"
+        down = "true"
+        status = "exit 8"
+        "#,
+    );
+    vpns(two.path())
+        .args(["config", "check"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "2 VPNs cannot be read: their status commands are probably wrong",
+        ));
+}
+
+#[test]
+fn config_check_fails_on_missing_command_with_pattern() {
+    let dir = setup(&one_vpn("status = \"no-such-cmd-xyz\"\nup_pattern = \"x\""));
+    vpns(dir.path())
+        .args(["config", "check"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("not found"));
+}
+
+#[test]
+fn config_check_rejects_invalid_config() {
+    let dir = setup(&format!("{}{}", one_vpn(""), one_vpn("")));
+    vpns(dir.path())
+        .args(["config", "check"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("defined more than once"));
+}
+
+#[test]
+fn config_edit_runs_editor_then_check() {
+    let dir = setup(THREE_VPNS);
+    vpns(dir.path())
+        .args(["config", "edit"])
+        .env_remove("VISUAL")
+        .env("EDITOR", "true")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("valid"));
+}
+
+#[test]
+fn config_edit_prefers_visual() {
+    let dir = setup(THREE_VPNS);
+    let script = dir.path().join("ed.sh");
+    std::fs::write(&script, "printf '%s' \"$1\" > \"$(dirname \"$0\")/seen\"\n").unwrap();
+    vpns(dir.path())
+        .args(["config", "edit"])
+        .env("VISUAL", format!("sh {}", script.display()))
+        .env("EDITOR", "false")
+        .assert()
+        .success();
+    let seen = std::fs::read_to_string(dir.path().join("seen")).unwrap();
+    assert_eq!(seen, dir.path().join("config.toml").display().to_string());
+}
+
+#[test]
+fn config_edit_passes_path_with_space_to_editor_with_args() {
+    let dir = tempfile::tempdir().unwrap();
+    let sub = dir.path().join("My Config");
+    std::fs::create_dir(&sub).unwrap();
+    let config = sub.join("config.toml");
+    std::fs::write(&config, THREE_VPNS).unwrap();
+    let script = dir.path().join("ed.sh");
+    std::fs::write(
+        &script,
+        "printf '%s|%s' \"$1\" \"$2\" > \"$(dirname \"$0\")/seen\"\n",
+    )
+    .unwrap();
+    Command::cargo_bin("vpns")
+        .unwrap()
+        .arg("--config")
+        .arg(&config)
+        .args(["config", "edit"])
+        .env_remove("VPNS_CONFIG")
+        .env_remove("VISUAL")
+        .env("NO_COLOR", "1")
+        .env("EDITOR", format!("sh {} --wait", script.display()))
+        .assert()
+        .success();
+    let seen = std::fs::read_to_string(dir.path().join("seen")).unwrap();
+    assert_eq!(seen, format!("--wait|{}", config.display()));
+}
+
+#[test]
+fn config_edit_without_file_suggests_init() {
+    let dir = tempfile::tempdir().unwrap();
+    vpns(dir.path())
+        .args(["config", "edit"])
+        .env_remove("VISUAL")
+        .env("EDITOR", "true")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("vpns init"));
+}

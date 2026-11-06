@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context as _, anyhow, bail};
 use clap::Parser;
 
-use vpn_switcher::cli::{Cli, Command};
+use vpn_switcher::cli::{Cli, Command, ConfigAction};
 use vpn_switcher::config::{self, Config, ConfigError};
 use vpn_switcher::interrupt::{self, Disposition};
 use vpn_switcher::runner::{self, Runner, ShellRunner};
@@ -46,6 +46,23 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     };
     match cli.command.unwrap_or(Command::Switch) {
         Command::Init { force } => init(&path, force),
+        Command::Config { action } => match action {
+            ConfigAction::Path => {
+                println!("{}", path.display());
+                if !path.exists() {
+                    eprintln!(
+                        "note: {} does not exist yet; run `vpns init` to create it",
+                        path.display()
+                    );
+                }
+                Ok(())
+            }
+            ConfigAction::Edit => {
+                edit(&path)?;
+                check(&ctx, &path)
+            }
+            ConfigAction::Check => check(&ctx, &path),
+        },
         Command::Switch => {
             ui::ensure_tty()?;
             let config = load(&path)?;
@@ -156,6 +173,37 @@ fn load(path: &Path) -> anyhow::Result<Config> {
         err @ ConfigError::Io { .. } => err.into(),
         err => anyhow::Error::new(err).context(format!("in {}", path.display())),
     })
+}
+
+/// Validates the configuration and probes every status command.
+fn check(ctx: &Context, path: &Path) -> anyhow::Result<()> {
+    let config = load(path)?;
+    let observations = ui::probe_with_spinner(&config.vpns, ctx.runner);
+    ui::print_check(path, &config.vpns, &observations);
+    match state::unreadable(&config.vpns, &observations).len() {
+        0 => Ok(()),
+        1 => bail!("1 VPN cannot be read: its status command is probably wrong"),
+        n => bail!("{n} VPNs cannot be read: their status commands are probably wrong"),
+    }
+}
+
+/// Opens the configuration in `$VISUAL`, `$EDITOR` or `vi`, on the terminal.
+fn edit(path: &Path) -> anyhow::Result<()> {
+    if !path.exists() {
+        load(path)?;
+    }
+    let editor = ["VISUAL", "EDITOR"]
+        .iter()
+        .filter_map(|var| std::env::var(var).ok())
+        .find(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "vi".to_string());
+    // The path is passed as `$1`, so spaces and quotes in it are safe.
+    std::process::Command::new("sh")
+        .args(["-c", &format!("{editor} \"$1\""), "vpns-edit"])
+        .arg(path)
+        .status()
+        .with_context(|| format!("cannot run editor `{editor}`"))?;
+    Ok(())
 }
 
 fn find(config: &Config, name: &str) -> anyhow::Result<usize> {

@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::io::IsTerminal;
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -82,6 +83,17 @@ pub fn print_status(vpns: &[Vpn], observations: &[Observation], verbose: bool) {
             println!("  {row}");
         }
     }
+}
+
+/// Prints the result of `config check`: a header, then why each state was chosen.
+pub fn print_check(path: &Path, vpns: &[Vpn], observations: &[Observation]) {
+    let count = match vpns.len() {
+        1 => "1 VPN".to_string(),
+        n => format!("{n} VPNs"),
+    };
+    let mark = "✓".if_supports_color(Stream::Stdout, |s| s.green().to_string());
+    println!("{mark} {}: {count}, valid", path.display());
+    print_status(vpns, observations, true);
 }
 
 fn state_label(state: VpnState) -> &'static str {
