@@ -85,6 +85,26 @@ pub fn new_presets(presets: Vec<Preset>, taken: &[&str]) -> Vec<Preset> {
     dedupe(fresh, taken)
 }
 
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// Success message of `vpns init`, without the final period: `added` tells an
+/// append to an existing file from a new file. Templates are counted apart from
+/// the active VPNs, and the templates part is left out when there is none.
+pub fn init_summary(added: bool, vpns: usize, templates: usize, path: &str) -> String {
+    let vpns_part = plural(vpns, "VPN", "VPNs");
+    let templates_part = format!("{} to complete", plural(templates, "template", "templates"));
+    match (added, vpns, templates) {
+        (true, _, 0) => format!("Added {vpns_part} to {path}"),
+        (true, 0, _) => format!("Added {templates_part} to {path}"),
+        (true, _, _) => format!("Added {vpns_part}, {templates_part}, to {path}"),
+        (false, _, 0) => format!("Wrote {path} ({vpns_part})"),
+        (false, 0, _) => format!("Wrote {path} ({templates_part})"),
+        (false, _, _) => format!("Wrote {path} ({vpns_part}, {templates_part})"),
+    }
+}
+
 fn toml_string(s: &str) -> String {
     toml::Value::String(s.to_string()).to_string()
 }
@@ -1034,5 +1054,28 @@ mod tests {
         for (name, output) in down_samples {
             assert_eq!(state(name, output), VpnState::Down, "{name}: {output:?}");
         }
+    }
+
+    #[test]
+    fn init_summary_wording() {
+        let p = "/c.toml";
+        assert_eq!(
+            init_summary(false, 2, 1, p),
+            "Wrote /c.toml (2 VPNs, 1 template to complete)"
+        );
+        assert_eq!(init_summary(false, 1, 0, p), "Wrote /c.toml (1 VPN)");
+        assert_eq!(
+            init_summary(false, 0, 2, p),
+            "Wrote /c.toml (2 templates to complete)"
+        );
+        assert_eq!(
+            init_summary(true, 1, 2, p),
+            "Added 1 VPN, 2 templates to complete, to /c.toml"
+        );
+        assert_eq!(init_summary(true, 3, 0, p), "Added 3 VPNs to /c.toml");
+        assert_eq!(
+            init_summary(true, 0, 1, p),
+            "Added 1 template to complete to /c.toml"
+        );
     }
 }

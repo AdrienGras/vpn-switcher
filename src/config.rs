@@ -206,6 +206,22 @@ pub fn names_in(existing: &str) -> Result<Vec<String>, ConfigError> {
     }
 }
 
+/// Names found in commented-out `name = "..."` lines of `existing`.
+///
+/// Commented templates (and VPNs the user disabled by hand) are not active
+/// VPNs, but they must not be proposed again. Lines that do not parse are ignored.
+pub fn commented_names(existing: &str) -> Vec<String> {
+    existing
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim_start().strip_prefix('#')?.trim();
+            let value = rest.strip_prefix("name")?.trim_start().strip_prefix('=')?;
+            let table: toml::Table = toml::from_str(&format!("name = {}", value.trim())).ok()?;
+            table.get("name")?.as_str().map(str::to_string)
+        })
+        .collect()
+}
+
 /// `existing` followed by `blocks`, keeping every byte of `existing` as is.
 ///
 /// Refuses an invalid `existing` (appending would hide its error) and an
@@ -441,5 +457,45 @@ mod tests {
             Config::from_toml(&header),
             Err(ConfigError::Empty)
         ));
+    }
+
+    fn template_preset(name: &str) -> crate::detect::Preset {
+        crate::detect::Preset {
+            name: name.to_string(),
+            source: "test".to_string(),
+            up: "wg-quick up NAME".to_string(),
+            down: "wg-quick down NAME".to_string(),
+            status: None,
+            up_pattern: None,
+            down_codes: None,
+            verified: false,
+            template: true,
+            note: Some("replace NAME".to_string()),
+        }
+    }
+
+    #[test]
+    fn commented_names_reads_a_rendered_template() {
+        let block = crate::detect::render(&template_preset("wg-quick"));
+        assert_eq!(commented_names(&block), ["wg-quick"]);
+    }
+
+    #[test]
+    fn commented_names_handles_escapes_and_ignores_noise() {
+        let text = "# name = \"a \\\"b\\\"\"\n#name = \"c\"\n#   name = 'd'\n\
+                    # name = broken\n# name_x = \"no\"\n# nothing\nname = \"active\"\n\
+                    # name = \"e\" trailing\n";
+        assert_eq!(commented_names(text), ["a \"b\"", "c", "d"]);
+    }
+
+    #[test]
+    fn commented_template_is_not_offered_again() {
+        let block = crate::detect::render(&template_preset("wg-quick"));
+        let existing = format!("{}\n{block}", example_header());
+        let mut taken = names_in(&existing).unwrap();
+        taken.extend(commented_names(&existing));
+        let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
+        let offered = crate::detect::new_presets(vec![template_preset("wg-quick")], &taken);
+        assert!(offered.is_empty());
     }
 }

@@ -257,6 +257,8 @@ fn init(path: &Path, force: bool, example: bool) -> anyhow::Result<()> {
                     path.display()
                 )
             })?;
+            let mut taken = taken;
+            taken.extend(config::commented_names(content));
             let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
             detect::new_presets(detected, &taken)
         }
@@ -281,15 +283,16 @@ fn init(path: &Path, force: bool, example: bool) -> anyhow::Result<()> {
         .iter()
         .map(|&i| detect::render(&presets[i]))
         .collect();
-    let n = blocks.len();
+    let templates = chosen.iter().filter(|&&i| presets[i].template).count();
+    let vpns = blocks.len() - templates;
     let (content, summary) = match &existing {
         Some(content) => (
             config::append_presets(content, &blocks)?,
-            format!("Added {n} VPNs to {}", path.display()),
+            detect::init_summary(true, vpns, templates, &path.display().to_string()),
         ),
         None => (
             format!("{}\n{}", config::example_header(), blocks.join("\n")),
-            format!("Wrote {} ({n} VPNs)", path.display()),
+            detect::init_summary(false, vpns, templates, &path.display().to_string()),
         ),
     };
     write_file(path, &content)?;
