@@ -10,9 +10,13 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(name = "vpns", version, about, long_about)]
 pub struct Cli {
-    /// Configuration file [default: $XDG_CONFIG_HOME/vpn-switcher/config.toml]
-    #[arg(long, short, global = true, env = "VPNS_CONFIG", value_name = "PATH")]
+    /// Configuration file [default: $VPNS_CONFIG, then $XDG_CONFIG_HOME/vpn-switcher/config.toml]
+    #[arg(long, short, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
+
+    /// Explain how each VPN state was determined
+    #[arg(long, short, global = true)]
+    pub verbose: bool,
 
     #[command(subcommand)]
     pub command: Option<Command>,

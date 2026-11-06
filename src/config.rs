@@ -72,6 +72,8 @@ pub enum ConfigError {
     Parse(#[from] toml::de::Error),
     #[error("the configuration defines no VPN (add a [[vpn]] table)")]
     Empty,
+    #[error("a VPN has an empty name")]
+    BlankName,
     #[error("VPN `{0}` is defined more than once")]
     DuplicateName(String),
     #[error("VPN `{name}`: invalid up_pattern")]
@@ -143,6 +145,9 @@ impl Config {
         }
         let mut vpns: Vec<Vpn> = Vec::with_capacity(raw.vpn.len());
         for raw_vpn in raw.vpn {
+            if raw_vpn.name.trim().is_empty() {
+                return Err(ConfigError::BlankName);
+            }
             if vpns.iter().any(|v| v.name == raw_vpn.name) {
                 return Err(ConfigError::DuplicateName(raw_vpn.name));
             }
@@ -268,6 +273,15 @@ mod tests {
         let toml = format!("{MINIMAL}{MINIMAL}");
         let err = Config::from_toml(&toml).unwrap_err();
         assert!(matches!(err, ConfigError::DuplicateName(ref n) if n == "a"));
+    }
+
+    #[test]
+    fn rejects_blank_name() {
+        let toml = MINIMAL.replace("\"a\"", "\"  \"");
+        assert!(matches!(
+            Config::from_toml(&toml).unwrap_err(),
+            ConfigError::BlankName
+        ));
     }
 
     #[test]

@@ -12,7 +12,7 @@ use owo_colors::{OwoColorize, Stream};
 
 use crate::config::Vpn;
 use crate::runner::Runner;
-use crate::state::{VpnState, probe_all};
+use crate::state::{Observation, VpnState, probe_all};
 use crate::switch::{Action, Step};
 
 const NOT_A_TTY: &str = "the interactive picker needs a terminal; use `vpns up <name>` instead";
@@ -48,7 +48,7 @@ pub fn ensure_tty() -> anyhow::Result<()> {
 }
 
 /// Probes every VPN behind a spinner (drawn on stderr, only on a terminal).
-pub fn probe_with_spinner(vpns: &[Vpn], runner: &dyn Runner) -> Vec<VpnState> {
+pub fn probe_with_spinner(vpns: &[Vpn], runner: &dyn Runner) -> Vec<Observation> {
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(
         ProgressStyle::with_template("{spinner:.cyan} {msg}")
@@ -56,16 +56,39 @@ pub fn probe_with_spinner(vpns: &[Vpn], runner: &dyn Runner) -> Vec<VpnState> {
     );
     spinner.set_message("Checking VPN status…");
     spinner.enable_steady_tick(Duration::from_millis(80));
-    let states = probe_all(vpns, runner);
+    let observations = probe_all(vpns, runner);
     spinner.finish_and_clear();
-    states
+    observations
 }
 
-/// Prints one aligned line per VPN.
-pub fn print_status(vpns: &[Vpn], states: &[VpnState]) {
+/// Prints one aligned line per VPN; `verbose` adds why each state was chosen.
+pub fn print_status(vpns: &[Vpn], observations: &[Observation], verbose: bool) {
     let width = name_width(vpns);
-    for (vpn, &state) in vpns.iter().zip(states) {
-        println!("  {}", Row::new(&vpn.name, state, width, Stream::Stdout));
+    let state_width = observations
+        .iter()
+        .map(|o| state_label(o.state).len())
+        .max()
+        .unwrap_or_default();
+    for (vpn, seen) in vpns.iter().zip(observations) {
+        let row = Row::new(&vpn.name, seen.state, width, Stream::Stdout);
+        if verbose {
+            let pad = " ".repeat(state_width - state_label(seen.state).len());
+            let detail = format!("· {}", seen.detail);
+            println!(
+                "  {row}{pad}  {}",
+                detail.if_supports_color(Stream::Stdout, |s| s.dimmed())
+            );
+        } else {
+            println!("  {row}");
+        }
+    }
+}
+
+fn state_label(state: VpnState) -> &'static str {
+    match state {
+        VpnState::Up => "up",
+        VpnState::Down => "down",
+        VpnState::Unknown => "unknown",
     }
 }
 
@@ -114,7 +137,7 @@ pub fn pick(vpns: &[Vpn], states: &[VpnState]) -> anyhow::Result<PickerOutcome> 
 pub fn report_step(step: Step) {
     let out = Stream::Stdout;
     match step {
-        Step::Starting(Action::Down(_), name) => println!(
+        Step::Starting(Action::Down(_) | Action::EnsureDown(_), name) => println!(
             "{} Stopping {}…",
             "↓".if_supports_color(out, |s| s.yellow()),
             name.if_supports_color(out, |s| s.bold())
@@ -123,6 +146,10 @@ pub fn report_step(step: Step) {
             "{} Starting {}…",
             "↑".if_supports_color(out, |s| s.cyan()),
             name.if_supports_color(out, |s| s.bold())
+        ),
+        Step::Ignored(_, name, exit) => println!(
+            "{} {name} down failed ({exit}); its state was unknown, going on",
+            "!".if_supports_color(out, |s| s.yellow()),
         ),
         Step::Done(action, name) => println!(
             "{} {} is {}",
@@ -148,12 +175,31 @@ fn name_width(vpns: &[Vpn]) -> usize {
         .unwrap_or_default()
 }
 
+/// Colors stay on unless `NO_COLOR` is set to a non-empty value.
+fn picker_colors(no_color: Option<&std::ffi::OsStr>) -> bool {
+    no_color.is_none_or(|value| value.is_empty())
+}
+
 fn render_config() -> RenderConfig<'static> {
-    RenderConfig::default_colored()
-        .with_prompt_prefix(Styled::new("◆").with_fg(Color::LightCyan))
-        .with_answered_prompt_prefix(Styled::new("◇").with_fg(Color::LightGreen))
-        .with_highlighted_option_prefix(Styled::new("›").with_fg(Color::LightCyan))
-        .with_selected_option(Some(StyleSheet::new().with_fg(Color::LightCyan)))
+    let colors = picker_colors(std::env::var_os("NO_COLOR").as_deref());
+    let paint = |text, color| {
+        let styled = Styled::new(text);
+        if colors {
+            styled.with_fg(color)
+        } else {
+            styled
+        }
+    };
+    let config = if colors {
+        RenderConfig::default_colored()
+            .with_selected_option(Some(StyleSheet::new().with_fg(Color::LightCyan)))
+    } else {
+        RenderConfig::empty()
+    };
+    config
+        .with_prompt_prefix(paint("◆", Color::LightCyan))
+        .with_answered_prompt_prefix(paint("◇", Color::LightGreen))
+        .with_highlighted_option_prefix(paint("›", Color::LightCyan))
 }
 
 /// One VPN rendered as `● name   up`.
@@ -185,21 +231,21 @@ impl fmt::Display for Row<'_> {
                 "{} {}  {}",
                 "●".if_supports_color(s, |t| t.green()),
                 name.if_supports_color(s, |t| t.bold()),
-                "up".if_supports_color(s, |t| t.green())
+                state_label(VpnState::Up).if_supports_color(s, |t| t.green())
             ),
             VpnState::Down => write!(
                 f,
                 "{} {}  {}",
                 "○".if_supports_color(s, |t| t.dimmed()),
                 name,
-                "down".if_supports_color(s, |t| t.dimmed())
+                state_label(VpnState::Down).if_supports_color(s, |t| t.dimmed())
             ),
             VpnState::Unknown => write!(
                 f,
                 "{} {}  {}",
                 "?".if_supports_color(s, |t| t.yellow()),
                 name,
-                "unknown".if_supports_color(s, |t| t.yellow())
+                state_label(VpnState::Unknown).if_supports_color(s, |t| t.yellow())
             ),
         }
     }
@@ -237,6 +283,14 @@ mod tests {
         );
         let err = picker_outcome(InquireError::NotTTY).unwrap_err();
         assert!(err.to_string().contains("vpns up"));
+    }
+
+    #[test]
+    fn picker_colors_respect_no_color() {
+        use std::ffi::OsStr;
+        assert!(picker_colors(None));
+        assert!(picker_colors(Some(OsStr::new(""))));
+        assert!(!picker_colors(Some(OsStr::new("1"))));
     }
 
     #[test]

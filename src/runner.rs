@@ -1,8 +1,9 @@
 //! Shell command execution.
 
 use std::io::Read;
-use std::os::unix::process::CommandExt;
-use std::process::{Child, Command, Stdio};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -30,8 +31,8 @@ pub enum Probe {
 pub trait Runner: Sync {
     /// Runs `cmd` without a terminal and captures its output.
     fn probe(&self, cmd: &str, timeout: Duration) -> Probe;
-    /// Runs `cmd` attached to the terminal; returns whether it succeeded.
-    fn run(&self, cmd: &str) -> std::io::Result<bool>;
+    /// Runs `cmd` attached to the terminal.
+    fn run(&self, cmd: &str) -> std::io::Result<ExitStatus>;
 }
 
 /// Runs commands through `sh -c`.
@@ -89,8 +90,46 @@ impl Runner for ShellRunner {
         }
     }
 
-    fn run(&self, cmd: &str) -> std::io::Result<bool> {
-        Ok(Command::new("sh").arg("-c").arg(cmd).status()?.success())
+    fn run(&self, cmd: &str) -> std::io::Result<ExitStatus> {
+        let _interactive = Interactive::start();
+        Command::new("sh").arg("-c").arg(cmd).status()
+    }
+}
+
+/// Human description of how a command ended: `exit code 3`, `interrupted`…
+pub fn describe_exit(status: ExitStatus) -> String {
+    match (status.code(), status.signal()) {
+        (Some(code), _) => format!("exit code {code}"),
+        (None, Some(signal)) if signal == Signal::SIGINT as i32 => "interrupted".to_string(),
+        (None, Some(signal)) => format!("killed by signal {signal}"),
+        (None, None) => "unknown exit status".to_string(),
+    }
+}
+
+/// Number of interactive up/down commands currently running.
+static INTERACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether an interactive up/down command currently owns the terminal.
+///
+/// The Ctrl-C handler leaves those alone: the terminal's SIGINT already reaches
+/// them, and `vpns` must outlive them to report what happened.
+pub fn interactive_child_running() -> bool {
+    INTERACTIVE.load(Ordering::SeqCst) > 0
+}
+
+/// Counts as an interactive command while alive.
+struct Interactive;
+
+impl Interactive {
+    fn start() -> Self {
+        INTERACTIVE.fetch_add(1, Ordering::SeqCst);
+        Interactive
+    }
+}
+
+impl Drop for Interactive {
+    fn drop(&mut self) {
+        INTERACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -211,8 +250,24 @@ mod tests {
     }
 
     #[test]
-    fn run_reports_success() {
-        assert!(ShellRunner.run("true").unwrap());
-        assert!(!ShellRunner.run("false").unwrap());
+    fn run_reports_exit_status() {
+        assert!(ShellRunner.run("true").unwrap().success());
+        assert_eq!(ShellRunner.run("exit 4").unwrap().code(), Some(4));
+    }
+
+    #[test]
+    fn interactive_flag_is_set_while_a_command_runs() {
+        let handle = std::thread::spawn(|| ShellRunner.run("sleep 0.5"));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(interactive_child_running());
+        handle.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn describe_exit_texts() {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(describe_exit(ExitStatus::from_raw(3 << 8)), "exit code 3");
+        assert_eq!(describe_exit(ExitStatus::from_raw(2)), "interrupted");
+        assert_eq!(describe_exit(ExitStatus::from_raw(9)), "killed by signal 9");
     }
 }
