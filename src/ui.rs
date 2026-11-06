@@ -22,15 +22,17 @@ const NOT_A_TTY: &str = "the interactive picker needs a terminal; use `vpns up <
 pub enum PickerOutcome {
     /// Switch to this VPN (`None`: disconnect all).
     Target(Option<usize>),
+    /// Esc: inquire already marks the prompt as canceled.
     Cancelled,
+    /// Ctrl-C: the menu is left on screen as is.
+    Interrupted,
 }
 
 /// Maps a picker error: cancellation is not an error.
 pub fn picker_outcome(err: InquireError) -> anyhow::Result<PickerOutcome> {
     match err {
-        InquireError::OperationCanceled | InquireError::OperationInterrupted => {
-            Ok(PickerOutcome::Cancelled)
-        }
+        InquireError::OperationCanceled => Ok(PickerOutcome::Cancelled),
+        InquireError::OperationInterrupted => Ok(PickerOutcome::Interrupted),
         InquireError::NotTTY => Err(anyhow!(NOT_A_TTY)),
         err => Err(anyhow::Error::new(err).context("interactive picker failed")),
     }
@@ -76,6 +78,7 @@ pub fn pick(vpns: &[Vpn], states: &[VpnState]) -> anyhow::Result<PickerOutcome> 
         .enumerate()
         .map(|(i, (vpn, &state))| Choice {
             label: Row::new(&vpn.name, state, width, Stream::Stderr).to_string(),
+            answer: vpn.name.clone(),
             target: Some(i),
         })
         .collect();
@@ -85,6 +88,7 @@ pub fn pick(vpns: &[Vpn], states: &[VpnState]) -> anyhow::Result<PickerOutcome> 
             "⏻".if_supports_color(Stream::Stderr, |s| s.red()),
             "Disconnect all"
         ),
+        answer: "disconnect all".to_string(),
         target: None,
     });
     let cursor = states
@@ -96,6 +100,7 @@ pub fn pick(vpns: &[Vpn], states: &[VpnState]) -> anyhow::Result<PickerOutcome> 
         .with_starting_cursor(cursor)
         .with_help_message("↑↓ move · enter switch · esc cancel")
         .with_render_config(render_config())
+        .with_formatter(&|option| format_answer(option.value))
         .without_filtering()
         .with_vim_mode(true)
         .prompt();
@@ -146,6 +151,7 @@ fn name_width(vpns: &[Vpn]) -> usize {
 fn render_config() -> RenderConfig<'static> {
     RenderConfig::default_colored()
         .with_prompt_prefix(Styled::new("◆").with_fg(Color::LightCyan))
+        .with_answered_prompt_prefix(Styled::new("◇").with_fg(Color::LightGreen))
         .with_highlighted_option_prefix(Styled::new("›").with_fg(Color::LightCyan))
         .with_selected_option(Some(StyleSheet::new().with_fg(Color::LightCyan)))
 }
@@ -201,7 +207,12 @@ impl fmt::Display for Row<'_> {
 
 struct Choice {
     label: String,
+    answer: String,
     target: Option<usize>,
+}
+
+fn format_answer(choice: &Choice) -> String {
+    choice.answer.clone()
 }
 
 impl fmt::Display for Choice {
@@ -222,9 +233,20 @@ mod tests {
         );
         assert_eq!(
             picker_outcome(InquireError::OperationInterrupted).unwrap(),
-            PickerOutcome::Cancelled
+            PickerOutcome::Interrupted
         );
         let err = picker_outcome(InquireError::NotTTY).unwrap_err();
         assert!(err.to_string().contains("vpns up"));
+    }
+
+    #[test]
+    fn answer_shows_only_the_name() {
+        let choice = Choice {
+            label: "● netbird  up".to_string(),
+            answer: "netbird".to_string(),
+            target: Some(2),
+        };
+        assert_eq!(choice.answer, "netbird");
+        assert_eq!(format_answer(&choice), "netbird");
     }
 }

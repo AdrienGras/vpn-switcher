@@ -43,7 +43,7 @@ state is shown. If a command fails, `vpns` stops right there and exits with a
 non-zero code.
 
 Up and down commands run attached to your terminal, so `sudo` can ask for a
-password.
+password. In the picker, Esc or Ctrl-C cancels without touching anything.
 
 ## Configuration
 
@@ -85,7 +85,8 @@ up_pattern = "Management: Connected"
 
 How the state is read from the `status` command:
 
-1. if `up_pattern` is set, a match means **up**, anything else **down**;
+1. if `up_pattern` is set, a match means **up**, anything else **down** — unless
+   the command was not found (126/127) or was killed, which means **unknown**;
 2. otherwise an exit code in `up_codes` means **up**, in `down_codes` **down**,
    anything else **unknown**.
 

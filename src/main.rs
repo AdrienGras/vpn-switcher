@@ -6,11 +6,17 @@ use clap::Parser;
 
 use vpn_switcher::cli::{Cli, Command};
 use vpn_switcher::config::{self, Config, ConfigError};
-use vpn_switcher::runner::{Runner, ShellRunner};
+use vpn_switcher::runner::{self, Runner, ShellRunner};
 use vpn_switcher::switch::{self, Action};
 use vpn_switcher::ui::{self, PickerOutcome};
 
 fn main() -> ExitCode {
+    // Status probes run in their own process groups, out of reach of the
+    // terminal's SIGINT: take them down with us.
+    let _ = ctrlc::set_handler(|| {
+        runner::kill_live_probes();
+        std::process::exit(130);
+    });
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
@@ -22,16 +28,12 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> anyhow::Result<()> {
     let path = config::resolve_path(cli.config)?;
-    let command = cli.command.unwrap_or(Command::Switch);
-    if let Command::Init { force } = command {
-        return init(&path, force);
-    }
-
-    let config = load(&path)?;
     let runner = ShellRunner;
-    match command {
+    match cli.command.unwrap_or(Command::Switch) {
+        Command::Init { force } => init(&path, force),
         Command::Switch => {
             ui::ensure_tty()?;
+            let config = load(&path)?;
             let states = ui::probe_with_spinner(&config.vpns, &runner);
             match ui::pick(&config.vpns, &states)? {
                 PickerOutcome::Target(target) => {
@@ -39,28 +41,36 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 }
                 // inquire already prints `<canceled>` on the prompt line.
                 PickerOutcome::Cancelled => Ok(()),
+                // Ctrl-C leaves the menu drawn as is: say that nothing happened.
+                PickerOutcome::Interrupted => {
+                    println!("\nCancelled.");
+                    Ok(())
+                }
             }
         }
         Command::Status => {
+            let config = load(&path)?;
             let states = ui::probe_with_spinner(&config.vpns, &runner);
             ui::print_status(&config.vpns, &states);
             Ok(())
         }
         Command::Up { name } => {
+            let config = load(&path)?;
             let index = find(&config, &name)?;
             let states = ui::probe_with_spinner(&config.vpns, &runner);
             apply(&config, &runner, &switch::plan_switch(&states, Some(index)))
         }
         Command::Down { name } => {
+            let config = load(&path)?;
             let index = find(&config, &name)?;
             let states = ui::probe_with_spinner(&config.vpns, &runner);
             apply(&config, &runner, &switch::plan_down(&states, index))
         }
         Command::Off => {
+            let config = load(&path)?;
             let states = ui::probe_with_spinner(&config.vpns, &runner);
             apply(&config, &runner, &switch::plan_switch(&states, None))
         }
-        Command::Init { .. } => unreachable!("handled above"),
     }
 }
 

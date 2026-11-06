@@ -19,6 +19,10 @@ pub fn classify(vpn: &Vpn, probe: &Probe) -> VpnState {
         return VpnState::Unknown;
     };
     if let Some(pattern) = &vpn.up_pattern {
+        // Killed, crashed, not executable or not found: the output proves nothing.
+        if matches!(code, None | Some(126 | 127)) {
+            return VpnState::Unknown;
+        }
         return if pattern.is_match(output) {
             VpnState::Up
         } else {
@@ -80,6 +84,24 @@ mod tests {
             classify(&v, &exited(0, "Status: Disconnected\n")),
             VpnState::Down
         );
+    }
+
+    #[test]
+    fn pattern_with_broken_command_is_unknown() {
+        let v = vpn("status = \"s\"\nup_pattern = \"Connected\"");
+        assert_eq!(
+            classify(&v, &exited(127, "sh: s: not found")),
+            VpnState::Unknown
+        );
+        assert_eq!(
+            classify(&v, &exited(126, "permission denied")),
+            VpnState::Unknown
+        );
+        let crashed = Probe::Exited {
+            code: None,
+            output: String::new(),
+        };
+        assert_eq!(classify(&v, &crashed), VpnState::Unknown);
     }
 
     #[test]

@@ -3,8 +3,10 @@
 use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
@@ -37,7 +39,8 @@ pub struct ShellRunner;
 
 impl Runner for ShellRunner {
     fn probe(&self, cmd: &str, timeout: Duration) -> Probe {
-        // Own process group, so a timeout kills the whole pipeline, not just `sh`.
+        let deadline = Instant::now() + timeout;
+        // Own process group, so a timeout or Ctrl-C kills the whole pipeline, not just `sh`.
         let spawned = Command::new("sh")
             .arg("-c")
             .arg(cmd)
@@ -50,19 +53,31 @@ impl Runner for ShellRunner {
             Ok(child) => child,
             Err(err) => return Probe::Failed(err.to_string()),
         };
-        // Drain both pipes concurrently so a chatty command cannot block on a full pipe.
-        let stdout = drain(child.stdout.take());
-        let stderr = drain(child.stderr.take());
+        let _live = LiveGroup::register(&child);
 
-        match child.wait_timeout(timeout) {
-            Ok(Some(status)) => {
-                let mut output = stdout.join().unwrap_or_default();
-                output.push_str(&stderr.join().unwrap_or_default());
-                Probe::Exited {
-                    code: status.code(),
-                    output,
+        // Drain both pipes concurrently so a chatty command cannot block on a full pipe.
+        let (tx, rx) = mpsc::channel();
+        drain(child.stdout.take(), Pipe::Stdout, tx.clone());
+        drain(child.stderr.take(), Pipe::Stderr, tx);
+
+        // The deadline covers the pipes too: a background process left holding them
+        // must not keep the probe waiting once `sh` has exited.
+        let (mut stdout, mut stderr) = (String::new(), String::new());
+        for _ in 0..2 {
+            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok((Pipe::Stdout, text)) => stdout = text,
+                Ok((Pipe::Stderr, text)) => stderr = text,
+                Err(_) => {
+                    kill_group(&mut child);
+                    return Probe::TimedOut;
                 }
             }
+        }
+        match child.wait_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(Some(status)) => Probe::Exited {
+                code: status.code(),
+                output: stdout + &stderr,
+            },
             Ok(None) => {
                 kill_group(&mut child);
                 Probe::TimedOut
@@ -79,19 +94,64 @@ impl Runner for ShellRunner {
     }
 }
 
-fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> JoinHandle<String> {
+/// Process groups of the status probes currently running.
+static LIVE_GROUPS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+fn live_groups() -> MutexGuard<'static, Vec<i32>> {
+    LIVE_GROUPS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Kills every status probe still running (used on Ctrl-C).
+///
+/// Probes live in their own process groups, so the terminal's SIGINT never
+/// reaches them.
+pub fn kill_live_probes() {
+    for &pgid in live_groups().iter() {
+        let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL);
+    }
+}
+
+/// Keeps a probe's process group in [`LIVE_GROUPS`] while it runs.
+struct LiveGroup(Option<i32>);
+
+impl LiveGroup {
+    fn register(child: &Child) -> Self {
+        let pgid = i32::try_from(child.id()).ok();
+        if let Some(pgid) = pgid {
+            live_groups().push(pgid);
+        }
+        LiveGroup(pgid)
+    }
+}
+
+impl Drop for LiveGroup {
+    fn drop(&mut self) {
+        if let Some(pgid) = self.0 {
+            live_groups().retain(|&g| g != pgid);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Pipe {
+    Stdout,
+    Stderr,
+}
+
+fn drain<R: Read + Send + 'static>(pipe: Option<R>, which: Pipe, tx: Sender<(Pipe, String)>) {
     thread::spawn(move || {
         let mut buf = Vec::new();
         if let Some(mut pipe) = pipe {
             // A read error just truncates the output; the exit code still counts.
             let _ = pipe.read_to_end(&mut buf);
         }
-        String::from_utf8_lossy(&buf).into_owned()
-    })
+        // The receiver is gone once the probe gave up; nothing left to report.
+        let _ = tx.send((which, String::from_utf8_lossy(&buf).into_owned()));
+    });
 }
 
-/// Kills the child's process group and reaps the child. Reader threads are left
-/// to finish on their own: they end as soon as the killed processes close the pipes.
+/// Kills the child's process group, then reaps the child. The child is not reaped
+/// before this point, so its pid (and group id) cannot have been reused.
 fn kill_group(child: &mut Child) {
     if let Ok(pid) = i32::try_from(child.id()) {
         let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
@@ -130,6 +190,24 @@ mod tests {
         let probe = ShellRunner.probe("sleep 5 & wait", Duration::from_millis(200));
         assert_eq!(probe, Probe::TimedOut);
         assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn probe_bounded_when_background_child_keeps_pipe() {
+        let start = Instant::now();
+        let probe = ShellRunner.probe("sleep 5 & exit 0", Duration::from_millis(200));
+        assert_eq!(probe, Probe::TimedOut);
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn kill_live_probes_stops_running_probe() {
+        let start = Instant::now();
+        let handle = std::thread::spawn(|| ShellRunner.probe("sleep 5", STATUS_TIMEOUT));
+        std::thread::sleep(Duration::from_millis(300));
+        kill_live_probes();
+        let probe = handle.join().unwrap();
+        assert!(start.elapsed() < Duration::from_secs(2), "{probe:?}");
     }
 
     #[test]
