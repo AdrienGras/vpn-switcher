@@ -1,0 +1,36 @@
+name: Demo GIF
+
+# Run by hand once the work is on main; it opens a pull request with the new GIF.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build vpns and put it on PATH
+        run: |
+          cargo build --release --locked
+          echo "$PWD/target/release" >> "$GITHUB_PATH"
+      - name: Render the tape
+        uses: charmbracelet/vhs-action@f6d7db07a432fcd3b06772628d36a57f96d95dcf # v2.1.1
+        with:
+          path: demo/demo.tape
+      - name: Open a pull request with the new GIF
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: demo-gif
+          add-paths: demo/demo.gif
+          commit-message: "docs: regenerate the demo GIF"
+          title: "docs: regenerate the demo GIF"
+          body: Rendered from `demo/demo.tape` by the Demo GIF workflow.

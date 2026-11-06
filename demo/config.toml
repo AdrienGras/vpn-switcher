@@ -1,0 +1,21 @@
+# Demo configuration used to render demo/demo.gif (see .github/workflows/demo.yml).
+# These are fake VPNs: "connecting" only creates a marker file in /tmp/vpns-demo.
+# No real VPN is involved.
+
+[[vpn]]
+name = "acme"
+up = "sleep 0.6 && touch /tmp/vpns-demo/acme"
+down = "sleep 0.4 && rm -f /tmp/vpns-demo/acme"
+status = "test -f /tmp/vpns-demo/acme"
+
+[[vpn]]
+name = "globex"
+up = "sleep 0.6 && touch /tmp/vpns-demo/globex"
+down = "sleep 0.4 && rm -f /tmp/vpns-demo/globex"
+status = "test -f /tmp/vpns-demo/globex"
+
+[[vpn]]
+name = "tailscale"
+up = "sleep 0.6 && touch /tmp/vpns-demo/tailscale"
+down = "sleep 0.4 && rm -f /tmp/vpns-demo/tailscale"
+status = "test -f /tmp/vpns-demo/tailscale"
