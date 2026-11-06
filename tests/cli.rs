@@ -272,30 +272,21 @@ fn failing_down_of_unknown_vpn_does_not_block_switch() {
     vpns(dir.path())
         .args(["up", "beta"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("gamma down failed (exit code 1)"));
+        .failure()
+        .stdout(predicate::str::contains("gamma down failed (exit code 1)"))
+        .stderr(predicate::str::contains("`gamma` may still be up"));
     assert!(dir.path().join("beta").exists());
 }
 
-#[test]
-fn ctrl_c_during_up_reports_state() {
-    use nix::sys::signal::{Signal, killpg};
-    use nix::unistd::Pid;
+/// Spawns `vpns up alpha` in its own process group, with an up command that
+/// writes `$D/started` then sleeps; returns once that file exists.
+fn spawn_slow_up(dir: &Path) -> std::process::Child {
     use std::os::unix::process::CommandExt;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
-    let dir = setup(
-        r#"
-        [[vpn]]
-        name = "alpha"
-        up = "sleep 5"
-        down = "true"
-        status = "false"
-        "#,
-    );
     let child = std::process::Command::new(assert_cmd::cargo::cargo_bin("vpns"))
         .arg("--config")
-        .arg(dir.path().join("config.toml"))
+        .arg(dir.join("config.toml"))
         .args(["up", "alpha"])
         .env("NO_COLOR", "1")
         .stdout(std::process::Stdio::piped())
@@ -303,16 +294,63 @@ fn ctrl_c_during_up_reports_state() {
         .process_group(0)
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_millis(800));
-    // What the terminal does on Ctrl-C: SIGINT to the whole foreground group.
-    killpg(Pid::from_raw(child.id() as i32), Signal::SIGINT).unwrap();
+    let start = Instant::now();
+    while !dir.join("started").exists() {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "up never started"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    child
+}
+
+const SLOW_UP: &str = r#"
+[[vpn]]
+name = "alpha"
+up = ": > $D/started; exec sleep 5"
+down = "true"
+status = "false"
+
+[[vpn]]
+name = "beta"
+up = "true"
+down = "true"
+status = "false"
+"#;
+
+fn assert_interrupted(child: std::process::Child, start: std::time::Instant) {
     let output = child.wait_with_output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert_eq!(output.status.code(), Some(1), "{stdout}{stderr}");
-    assert!(
-        stderr.contains("`alpha` up command failed (interrupted)"),
-        "{stderr}"
-    );
+    assert!(start.elapsed() < std::time::Duration::from_secs(3));
+    assert_eq!(output.status.code(), Some(130), "{stdout}{stderr}");
+    assert!(stderr.contains("interrupted"), "{stderr}");
     assert!(stdout.contains("alpha  down"), "{stdout}");
+}
+
+#[test]
+fn ctrl_c_during_up_reports_state() {
+    use nix::sys::signal::{Signal, killpg};
+    use nix::unistd::Pid;
+
+    let dir = setup(SLOW_UP);
+    let child = spawn_slow_up(dir.path());
+    let start = std::time::Instant::now();
+    // What the terminal does on Ctrl-C: SIGINT to the whole foreground group.
+    killpg(Pid::from_raw(child.id() as i32), Signal::SIGINT).unwrap();
+    assert_interrupted(child, start);
+}
+
+#[test]
+fn sigterm_during_up_stops_the_command() {
+    use nix::sys::signal::{Signal, kill};
+    use nix::unistd::Pid;
+
+    let dir = setup(SLOW_UP);
+    let child = spawn_slow_up(dir.path());
+    let start = std::time::Instant::now();
+    // Only `vpns` gets it: it must pass it on to the running command.
+    kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM).unwrap();
+    assert_interrupted(child, start);
 }

@@ -175,13 +175,17 @@ fn name_width(vpns: &[Vpn]) -> usize {
         .unwrap_or_default()
 }
 
-/// Colors stay on unless `NO_COLOR` is set to a non-empty value.
-fn picker_colors(no_color: Option<&std::ffi::OsStr>) -> bool {
-    no_color.is_none_or(|value| value.is_empty())
+/// Same rule as every other colored output (`NO_COLOR`, `FORCE_COLOR`, terminal
+/// support): ask owo-colors.
+fn stderr_has_colors() -> bool {
+    "x".if_supports_color(Stream::Stderr, |s| s.red())
+        .to_string()
+        .len()
+        > 1
 }
 
 fn render_config() -> RenderConfig<'static> {
-    let colors = picker_colors(std::env::var_os("NO_COLOR").as_deref());
+    let colors = stderr_has_colors();
     let paint = |text, color| {
         let styled = Styled::new(text);
         if colors {
@@ -283,14 +287,6 @@ mod tests {
         );
         let err = picker_outcome(InquireError::NotTTY).unwrap_err();
         assert!(err.to_string().contains("vpns up"));
-    }
-
-    #[test]
-    fn picker_colors_respect_no_color() {
-        use std::ffi::OsStr;
-        assert!(picker_colors(None));
-        assert!(picker_colors(Some(OsStr::new(""))));
-        assert!(!picker_colors(Some(OsStr::new("1"))));
     }
 
     #[test]

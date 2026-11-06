@@ -20,12 +20,14 @@ small TOML file, so any VPN with a command-line client works.
 
 ## Install
 
-Prebuilt Linux binaries (x86_64, aarch64) are attached to each
-[release](https://github.com/AdrienGras/vpn-switcher/releases):
+Static Linux binaries (x86_64, aarch64; no dependency, any distribution) are
+attached to each [release](https://github.com/AdrienGras/vpn-switcher/releases):
 
 ```sh
-curl -sSL https://github.com/AdrienGras/vpn-switcher/releases/latest/download/vpns-v0.2.0-x86_64-unknown-linux-gnu.tar.gz \
-  | tar xz --strip-components=1 -C ~/.local/bin vpns-v0.2.0-x86_64-unknown-linux-gnu/vpns
+target=x86_64-unknown-linux-musl   # or aarch64-unknown-linux-musl
+mkdir -p ~/.local/bin
+curl -sSL "https://github.com/AdrienGras/vpn-switcher/releases/latest/download/vpns-$target.tar.gz" \
+  | tar xz --strip-components=1 -C ~/.local/bin "vpns-$target/vpns"
 ```
 
 Or build from source (Rust 1.99 or newer):
@@ -53,12 +55,14 @@ determined — is stopped first, then the target is started, and the resulting
 state is shown. If a command fails, `vpns` stops right there, reports its exit
 code and exits with a non-zero code. The one exception: stopping a VPN whose
 state is unknown is best-effort, since it was probably down already — if that
-fails, `vpns` warns and carries on.
+fails, `vpns` warns, carries on, and still exits with a non-zero code since that
+VPN may be up.
 
 Up and down commands run attached to your terminal, so `sudo` can ask for a
-password. Ctrl-C during one of them lets it end, then `vpns` shows the
-resulting state. In the picker, Esc or Ctrl-C cancels without touching
-anything. Colors follow `NO_COLOR`.
+password. Ctrl-C (or SIGTERM) during a switch stops the running command, skips
+the remaining steps, shows the resulting state and exits with code 130; a second
+one quits at once. In the picker, Esc or Ctrl-C cancels without touching
+anything. Colors follow `NO_COLOR` and `FORCE_COLOR`.
 
 ## Configuration
 

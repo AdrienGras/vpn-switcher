@@ -3,7 +3,6 @@
 use std::io::Read;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -12,6 +11,8 @@ use std::time::{Duration, Instant};
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use wait_timeout::ChildExt;
+
+use crate::interrupt;
 
 /// How long a status command may run before its VPN is reported as unknown.
 pub const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
@@ -91,8 +92,9 @@ impl Runner for ShellRunner {
     }
 
     fn run(&self, cmd: &str) -> std::io::Result<ExitStatus> {
-        let _interactive = Interactive::start();
-        Command::new("sh").arg("-c").arg(cmd).status()
+        let mut child = Command::new("sh").arg("-c").arg(cmd).spawn()?;
+        let _tracked = interrupt::track_child(child.id());
+        child.wait()
     }
 }
 
@@ -103,33 +105,6 @@ pub fn describe_exit(status: ExitStatus) -> String {
         (None, Some(signal)) if signal == Signal::SIGINT as i32 => "interrupted".to_string(),
         (None, Some(signal)) => format!("killed by signal {signal}"),
         (None, None) => "unknown exit status".to_string(),
-    }
-}
-
-/// Number of interactive up/down commands currently running.
-static INTERACTIVE: AtomicUsize = AtomicUsize::new(0);
-
-/// Whether an interactive up/down command currently owns the terminal.
-///
-/// The Ctrl-C handler leaves those alone: the terminal's SIGINT already reaches
-/// them, and `vpns` must outlive them to report what happened.
-pub fn interactive_child_running() -> bool {
-    INTERACTIVE.load(Ordering::SeqCst) > 0
-}
-
-/// Counts as an interactive command while alive.
-struct Interactive;
-
-impl Interactive {
-    fn start() -> Self {
-        INTERACTIVE.fetch_add(1, Ordering::SeqCst);
-        Interactive
-    }
-}
-
-impl Drop for Interactive {
-    fn drop(&mut self) {
-        INTERACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -204,8 +179,16 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
+    /// `kill_live_probes` kills every probe of the process: keep probe tests apart.
+    static PROBES: Mutex<()> = Mutex::new(());
+
+    fn serial() -> MutexGuard<'static, ()> {
+        PROBES.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     #[test]
     fn probe_captures_output_and_code() {
+        let _serial = serial();
         let probe = ShellRunner.probe("echo hi; echo err >&2; exit 3", STATUS_TIMEOUT);
         let Probe::Exited { code, output } = probe else {
             panic!("unexpected probe: {probe:?}");
@@ -217,6 +200,7 @@ mod tests {
 
     #[test]
     fn probe_times_out() {
+        let _serial = serial();
         let start = Instant::now();
         let probe = ShellRunner.probe("sleep 5", Duration::from_millis(200));
         assert_eq!(probe, Probe::TimedOut);
@@ -225,6 +209,7 @@ mod tests {
 
     #[test]
     fn probe_times_out_with_background_child_holding_pipes() {
+        let _serial = serial();
         let start = Instant::now();
         let probe = ShellRunner.probe("sleep 5 & wait", Duration::from_millis(200));
         assert_eq!(probe, Probe::TimedOut);
@@ -233,6 +218,7 @@ mod tests {
 
     #[test]
     fn probe_bounded_when_background_child_keeps_pipe() {
+        let _serial = serial();
         let start = Instant::now();
         let probe = ShellRunner.probe("sleep 5 & exit 0", Duration::from_millis(200));
         assert_eq!(probe, Probe::TimedOut);
@@ -241,6 +227,7 @@ mod tests {
 
     #[test]
     fn kill_live_probes_stops_running_probe() {
+        let _serial = serial();
         let start = Instant::now();
         let handle = std::thread::spawn(|| ShellRunner.probe("sleep 5", STATUS_TIMEOUT));
         std::thread::sleep(Duration::from_millis(300));
@@ -251,16 +238,9 @@ mod tests {
 
     #[test]
     fn run_reports_exit_status() {
+        let _lock = interrupt::test_lock();
         assert!(ShellRunner.run("true").unwrap().success());
         assert_eq!(ShellRunner.run("exit 4").unwrap().code(), Some(4));
-    }
-
-    #[test]
-    fn interactive_flag_is_set_while_a_command_runs() {
-        let handle = std::thread::spawn(|| ShellRunner.run("sleep 0.5"));
-        std::thread::sleep(Duration::from_millis(200));
-        assert!(interactive_child_running());
-        handle.join().unwrap().unwrap();
     }
 
     #[test]

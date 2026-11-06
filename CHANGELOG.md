@@ -9,16 +9,18 @@ and the project uses [Semantic Versioning](https://semver.org/).
 ### Added
 - `-v` / `--verbose` explains how each VPN state was determined
   (`exit code 1`, `output matches …`, `status command timed out after 10s`…).
-- Prebuilt Linux binaries (x86_64 and aarch64) attached to each GitHub release.
+- Static Linux binaries (x86_64 and aarch64, musl) attached to each GitHub release.
 
 ### Changed
 - During a switch, a VPN whose state is unknown is stopped on a best-effort
-  basis: if its down command fails, `vpns` warns and carries on. An explicit
-  `vpns down <name>` stays strict.
+  basis: if its down command fails, `vpns` warns, carries on, and exits with a
+  non-zero code. An explicit `vpns down <name>` stays strict.
 - A failed up/down command reports its exit code or signal.
-- Ctrl-C during an up/down command lets that command end, then shows the
-  resulting state and exits with an error instead of quitting silently.
-- The picker honours `NO_COLOR`.
+- Ctrl-C, SIGTERM or SIGHUP during a switch stops the running command, skips
+  the remaining steps, shows the resulting state and exits with code 130; a
+  second signal quits at once.
+- The picker follows the same color rules as the rest of the output
+  (`NO_COLOR`, `FORCE_COLOR`).
 
 ### Fixed
 - An empty `VPNS_CONFIG` is treated as unset instead of breaking every command.

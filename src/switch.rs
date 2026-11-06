@@ -1,6 +1,10 @@
 //! Switch planning and execution.
 
 use crate::config::Vpn;
+use std::os::unix::process::ExitStatusExt;
+
+use nix::sys::signal::Signal;
+
 use crate::runner::{Runner, describe_exit};
 use crate::state::VpnState;
 
@@ -56,6 +60,8 @@ pub enum SwitchError {
     },
     #[error("no VPN at index {0}")]
     NoSuchVpn(usize),
+    #[error("interrupted, remaining steps skipped")]
+    Interrupted,
 }
 
 /// Actions that leave only `target` up (`None`: everything down).
@@ -88,11 +94,13 @@ pub fn plan_down(states: &[VpnState], index: usize) -> Vec<Action> {
 }
 
 /// Runs `actions` in order, stopping at the first failure (a failed
-/// [`Action::EnsureDown`] is only reported, as [`Step::Ignored`]).
+/// [`Action::EnsureDown`] is only reported, as [`Step::Ignored`]) or as soon as
+/// `interrupted` says so, or a command was killed by SIGINT.
 pub fn execute(
     actions: &[Action],
     vpns: &[Vpn],
     runner: &dyn Runner,
+    interrupted: &dyn Fn() -> bool,
     mut on_step: impl FnMut(Step),
 ) -> Result<(), SwitchError> {
     for &action in actions {
@@ -103,12 +111,19 @@ pub fn execute(
             Action::Down(_) | Action::EnsureDown(_) => &vpn.down,
             Action::Up(_) => &vpn.up,
         };
+        if interrupted() {
+            return Err(SwitchError::Interrupted);
+        }
         on_step(Step::Starting(action, &vpn.name));
         let status = runner.run(command).map_err(|source| SwitchError::Spawn {
             name: vpn.name.clone(),
             verb: action.verb(),
             source,
         })?;
+        // The handler may not have run yet when a Ctrl-C killed the command.
+        if interrupted() || status.signal() == Some(Signal::SIGINT as i32) {
+            return Err(SwitchError::Interrupted);
+        }
         if status.success() {
             on_step(Step::Done(action, &vpn.name));
         } else if let Action::EnsureDown(_) = action {
@@ -130,7 +145,6 @@ mod tests {
     use crate::config::Config;
     use crate::runner::Probe;
     use VpnState::{Down, Unknown, Up};
-    use std::os::unix::process::ExitStatusExt;
     use std::process::ExitStatus;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -217,6 +231,7 @@ mod tests {
             &[Action::Down(0), Action::Up(1)],
             &config.vpns,
             &runner,
+            &|| false,
             |_| {},
         )
         .unwrap_err();
@@ -237,6 +252,7 @@ mod tests {
             &[Action::EnsureDown(0), Action::Up(1)],
             &config.vpns,
             &runner,
+            &|| false,
             |step| steps.push(format!("{step:?}")),
         )
         .unwrap();
@@ -252,10 +268,51 @@ mod tests {
     }
 
     #[test]
+    fn interruption_stops_after_the_current_command() {
+        let config = two_vpns("a-down");
+        let runner = Recorder::default();
+        let interrupted = || !runner.0.lock().unwrap().is_empty();
+        let err = execute(
+            &[Action::Down(0), Action::Up(1)],
+            &config.vpns,
+            &runner,
+            &interrupted,
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, SwitchError::Interrupted));
+        assert_eq!(*runner.0.lock().unwrap(), ["a-down"]);
+    }
+
+    #[test]
+    fn interrupted_ensure_down_is_not_ignored() {
+        let config = two_vpns("a-fail");
+        let runner = Recorder::default();
+        let interrupted = || !runner.0.lock().unwrap().is_empty();
+        let mut steps = Vec::new();
+        let err = execute(
+            &[Action::EnsureDown(0), Action::Up(1)],
+            &config.vpns,
+            &runner,
+            &interrupted,
+            |step| steps.push(format!("{step:?}")),
+        )
+        .unwrap_err();
+        assert!(matches!(err, SwitchError::Interrupted));
+        assert_eq!(steps, ["Starting(EnsureDown(0), \"a\")"]);
+    }
+
+    #[test]
     fn execute_rejects_unknown_index() {
         let config = two_vpns("a-down");
-        let err =
-            execute(&[Action::Up(5)], &config.vpns, &Recorder::default(), |_| {}).unwrap_err();
+        let err = execute(
+            &[Action::Up(5)],
+            &config.vpns,
+            &Recorder::default(),
+            &|| false,
+            |_| {},
+        )
+        .unwrap_err();
         assert!(matches!(err, SwitchError::NoSuchVpn(5)));
     }
 
@@ -268,6 +325,7 @@ mod tests {
             &[Action::Down(0), Action::Up(1)],
             &config.vpns,
             &runner,
+            &|| false,
             |step| steps.push(format!("{step:?}")),
         )
         .unwrap();

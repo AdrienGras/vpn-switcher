@@ -1,31 +1,39 @@
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::{Context as _, anyhow, bail};
 use clap::Parser;
 
 use vpn_switcher::cli::{Cli, Command};
 use vpn_switcher::config::{self, Config, ConfigError};
+use vpn_switcher::interrupt::{self, Disposition};
 use vpn_switcher::runner::{self, Runner, ShellRunner};
 use vpn_switcher::state::{self, VpnState};
-use vpn_switcher::switch::{self, Action};
+use vpn_switcher::switch::{self, Action, Step, SwitchError};
 use vpn_switcher::ui::{self, PickerOutcome};
 
+/// Exit code after Ctrl-C (128 + SIGINT), as shells do.
+const INTERRUPTED: i32 = 130;
+
 fn main() -> ExitCode {
-    // Ctrl-C: an interactive up/down command gets the terminal's SIGINT itself, and
-    // `vpns` stays alive to report how it ended. Otherwise kill the status probes,
-    // which run in their own process groups out of the terminal's reach, and leave.
+    // Ctrl-C, SIGTERM, SIGHUP. During a switch, the first one stops the running
+    // command and skips the rest (see `interrupt`). Otherwise kill the status
+    // probes, which run in their own process groups out of the terminal's reach.
     let _ = ctrlc::set_handler(|| {
-        if !runner::interactive_child_running() {
+        if interrupt::on_signal() == Disposition::Exit {
             runner::kill_live_probes();
-            std::process::exit(130);
+            std::process::exit(INTERRUPTED);
         }
     });
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             ui::print_error(&err);
-            ExitCode::FAILURE
+            match err.downcast_ref::<SwitchError>() {
+                Some(SwitchError::Interrupted) => ExitCode::from(INTERRUPTED as u8),
+                _ => ExitCode::FAILURE,
+            }
         }
     }
 }
@@ -98,15 +106,43 @@ impl Context<'_> {
     }
 
     /// Runs the actions, then shows the resulting state even if one of them failed.
+    ///
+    /// A best-effort stop that failed does not stop the switch, but still makes
+    /// the command fail: that VPN may be up.
     fn apply(&self, config: &Config, actions: &[Action]) -> anyhow::Result<()> {
         if actions.is_empty() {
             println!("Nothing to do.");
             return Ok(());
         }
-        let result = switch::execute(actions, &config.vpns, self.runner, ui::report_step);
+        let mut ignored = Vec::new();
+        let result = {
+            let _switch = interrupt::begin_switch();
+            let result = switch::execute(
+                actions,
+                &config.vpns,
+                self.runner,
+                &interrupt::requested,
+                |step| {
+                    if let Step::Ignored(_, name, exit) = &step {
+                        ignored.push(format!(
+                            "`{name}` may still be up: its down command failed ({exit})"
+                        ));
+                    }
+                    ui::report_step(step);
+                },
+            );
+            if matches!(result, Err(SwitchError::Interrupted)) {
+                interrupt::settle(Duration::from_millis(500));
+            }
+            result
+        };
         println!();
         self.show(config);
-        Ok(result?)
+        result?;
+        match ignored.is_empty() {
+            true => Ok(()),
+            false => Err(anyhow!(ignored.join("\n"))),
+        }
     }
 }
 

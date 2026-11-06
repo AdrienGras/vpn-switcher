@@ -11,11 +11,12 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  create:
+  # A draft first: the release only becomes public once every binary is attached.
+  draft:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Create the release from the changelog
+      - name: Create a draft release from the changelog
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -25,29 +26,47 @@ jobs:
             on && /^## \[/ { exit }
             on { print }
           ' CHANGELOG.md > notes.md
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+          if ! test -s notes.md; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+                 --title "$GITHUB_REF_NAME" --notes-file notes.md
 
   build:
-    needs: create
+    needs: draft
     strategy:
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release --locked
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo test --locked
+      - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package and upload
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          name="vpns-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          name="vpns-${{ matrix.target }}"
           mkdir "$name"
-          cp target/release/vpns README.md LICENSE CHANGELOG.md "$name/"
+          cp "target/${{ matrix.target }}/release/vpns" README.md LICENSE CHANGELOG.md "$name/"
           tar czf "$name.tar.gz" "$name"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
-          gh release upload "$GITHUB_REF_NAME" "$name.tar.gz" "$name.tar.gz.sha256"
+          gh release upload "$GITHUB_REF_NAME" "$name.tar.gz" "$name.tar.gz.sha256" --clobber
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
