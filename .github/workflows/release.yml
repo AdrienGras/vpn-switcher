@@ -3,9 +3,15 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Dry run: builds and packages everything, uploads nothing to a release.
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - ".github/scripts/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
 
-permissions:
-  contents: write
+permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,60 +19,134 @@ env:
 jobs:
   # A draft first: the release only becomes public once every binary is attached.
   draft:
+    if: ${{ github.ref_type == 'tag' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
       - name: Create a draft release from the changelog
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          awk -v v="$version" '
-            $0 ~ "^## \\[" v "\\]" { on = 1; next }
-            on && /^## \[/ { exit }
-            on { print }
-          ' CHANGELOG.md > notes.md
-          if ! test -s notes.md; then
-            echo "::error::CHANGELOG.md has no section for $version"
-            exit 1
-          fi
+          .github/scripts/check-version.sh "$GITHUB_REF_NAME"
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
                  --title "$GITHUB_REF_NAME" --notes-file notes.md
 
   build:
     needs: draft
+    # The draft job is skipped on pull requests; build must still run then.
+    if: ${{ !failure() && !cancelled() }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
+            test: true
+            native: true
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
+            test: true
+            native: true
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            test: true
+            native: true
+          # Cross-compiled from an arm64 runner: the binary cannot run there,
+          # so tests are skipped and a host build generates completions/man page.
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            test: false
+            native: false
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - run: cargo test --locked
-      - run: cargo build --release --locked --target ${{ matrix.target }}
-      - name: Package and upload
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Test
+        if: ${{ matrix.test }}
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Build host binary to generate completions and man page
+        if: ${{ !matrix.native }}
+        run: cargo build --release --locked
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+          NATIVE: ${{ matrix.native }}
+        run: |
+          bin="target/$TARGET/release/vpns"
+          if [ "$NATIVE" = "true" ]; then gen_bin=$bin; else gen_bin=target/release/vpns; fi
+          .github/scripts/package.sh "$TARGET" "$bin" "$gen_bin"
+      - name: Attest build provenance
+        if: ${{ github.ref_type == 'tag' }}
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: vpns-${{ matrix.target }}.tar.gz
+      - name: Upload to the draft release
+        if: ${{ github.ref_type == 'tag' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ matrix.target }}
         run: |
-          name="vpns-${{ matrix.target }}"
-          mkdir "$name"
-          cp "target/${{ matrix.target }}/release/vpns" README.md LICENSE CHANGELOG.md "$name/"
-          tar czf "$name.tar.gz" "$name"
-          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
-          gh release upload "$GITHUB_REF_NAME" "$name.tar.gz" "$name.tar.gz.sha256" --clobber
+          gh release upload "$GITHUB_REF_NAME" "vpns-$TARGET.tar.gz" "vpns-$TARGET.tar.gz.sha256" --clobber
+      - name: Keep the archive (dry run)
+        if: ${{ github.ref_type != 'tag' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: vpns-${{ matrix.target }}
+          path: |
+            vpns-${{ matrix.target }}.tar.gz
+            vpns-${{ matrix.target }}.tar.gz.sha256
 
   publish:
+    if: ${{ github.ref_type == 'tag' }}
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+        run: |
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then flag=--prerelease; else flag=--latest; fi
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false "$flag"
+
+  crates-io:
+    if: ${{ github.ref_type == 'tag' && vars.CRATES_IO_TRUSTED_PUBLISHING == 'true' }}
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Skip when this version is already on crates.io
+        id: exists
+        run: |
+          if cargo info "vpn-switcher@${GITHUB_REF_NAME#v}" --registry crates-io >/dev/null 2>&1; then
+            echo "::notice::vpn-switcher ${GITHUB_REF_NAME#v} is already published on crates.io"
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Authenticate with crates.io
+        if: ${{ steps.exists.outputs.published != 'true' }}
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+      - name: Publish
+        if: ${{ steps.exists.outputs.published != 'true' }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --locked
