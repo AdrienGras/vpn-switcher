@@ -158,6 +158,12 @@ impl fmt::Display for PresetChoice {
     }
 }
 
+/// Title of the preset selection prompt.
+fn found_title(n: usize) -> String {
+    let noun = if n == 1 { "profile" } else { "profiles" };
+    format!("Found {n} VPN {noun}:")
+}
+
 /// Lets the user pick which detected presets to write, all checked at first.
 ///
 /// Returns the chosen indexes into `presets`, or `None` on Esc or Ctrl-C.
@@ -185,7 +191,7 @@ pub fn select_presets(presets: &[Preset]) -> anyhow::Result<Option<Vec<usize>>> 
         })
         .collect();
     let all: Vec<usize> = (0..choices.len()).collect();
-    let title = format!("Found {} VPN profiles:", presets.len());
+    let title = found_title(presets.len());
     let answer = MultiSelect::new(&title, choices)
         .with_default(&all)
         .with_help_message("space toggle · enter write · esc cancel")
@@ -344,6 +350,12 @@ impl fmt::Display for Choice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn found_title_agrees_with_count() {
+        assert_eq!(found_title(1), "Found 1 VPN profile:");
+        assert_eq!(found_title(3), "Found 3 VPN profiles:");
+    }
 
     #[test]
     fn picker_outcome_maps_cancel() {

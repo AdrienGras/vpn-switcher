@@ -196,26 +196,33 @@ pub fn example_header() -> String {
 }
 
 /// Names of the VPNs defined in `existing`, which must be a valid configuration.
+///
+/// A file with no VPN at all (empty, or only comments) defines no names.
 pub fn names_in(existing: &str) -> Result<Vec<String>, ConfigError> {
-    Ok(Config::from_toml(existing)?
-        .vpns
-        .into_iter()
-        .map(|v| v.name)
-        .collect())
+    match Config::from_toml(existing) {
+        Ok(config) => Ok(config.vpns.into_iter().map(|v| v.name).collect()),
+        Err(ConfigError::Empty) => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
 }
 
 /// `existing` followed by `blocks`, keeping every byte of `existing` as is.
 ///
-/// Refuses an invalid `existing`: appending to it would hide its error.
+/// Refuses an invalid `existing` (appending would hide its error) and an
+/// invalid result. A file with no VPN yet (empty, or only comments) is fine,
+/// and so is a result made of templates only.
 pub fn append_presets(existing: &str, blocks: &[String]) -> Result<String, ConfigError> {
-    Config::from_toml(existing)?;
+    names_in(existing)?;
     let mut out = existing.to_string();
     if !out.ends_with('\n') {
         out.push('\n');
     }
     out.push('\n');
     out.push_str(&blocks.join("\n"));
-    Ok(out)
+    match Config::from_toml(&out) {
+        Ok(_) | Err(ConfigError::Empty) => Ok(out),
+        Err(e) => Err(e),
+    }
 }
 
 /// `$XDG_CONFIG_HOME/vpn-switcher/config.toml` (or `~/.config/...`).
@@ -392,6 +399,36 @@ mod tests {
     fn names_in_lists_names() {
         assert_eq!(names_in(HAND_WRITTEN).unwrap(), ["a"]);
         assert!(names_in("[[vpn]]").is_err());
+    }
+
+    const INLINE: &str = "vpn = [{ name = \"a\", up = \"u\", down = \"d\" }]\n";
+
+    #[test]
+    fn append_refuses_when_result_is_invalid() {
+        let block = "[[vpn]]\nname = \"b\"\nup = \"u\"\ndown = \"d\"\n".to_string();
+        assert!(Config::from_toml(INLINE).is_ok());
+        assert!(matches!(
+            append_presets(INLINE, &[block]),
+            Err(ConfigError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn append_to_comment_only_file_keeps_its_bytes() {
+        let existing = "# nothing yet\n# still nothing";
+        let block = "[[vpn]]\nname = \"b\"\nup = \"u\"\ndown = \"d\"\n".to_string();
+        let out = append_presets(existing, &[block]).unwrap();
+        assert!(out.starts_with(existing));
+        assert_eq!(Config::from_toml(&out).unwrap().vpns.len(), 1);
+        // Templates only: still no active VPN, which is fine.
+        let out = append_presets(existing, &["# t\n".to_string()]).unwrap();
+        assert!(out.starts_with(existing));
+    }
+
+    #[test]
+    fn names_in_empty_file_is_empty() {
+        assert!(names_in("").unwrap().is_empty());
+        assert!(names_in("# only comments\n").unwrap().is_empty());
     }
 
     #[test]

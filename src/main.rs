@@ -233,8 +233,13 @@ fn init(path: &Path, force: bool, example: bool) -> anyhow::Result<()> {
     }
     let detected = detect::detect(&Sources::system(&ShellRunner));
     if detected.is_empty() {
+        if path.exists() && !force {
+            println!("No VPN client detected; {} is unchanged.", path.display());
+            return Ok(());
+        }
+        write_example(path, force)?;
         println!("No VPN client detected; wrote the commented example instead.");
-        return write_example(path, force);
+        return Ok(());
     }
     // Appending to a hand-written file: keep it, and only propose what it lacks.
     let existing = match path.exists() && !force {
